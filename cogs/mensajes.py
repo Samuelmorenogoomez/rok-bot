@@ -557,8 +557,12 @@ class Mensajes(commands.Cog):
                 omitidos += 1
                 continue
 
-            # Saltar si el bot ya tiene mensajes en este canal (evitar duplicados)
-            hay_mensajes = [m async for m in canal.history(limit=5) if m.author == interaction.guild.me]
+            # Saltar si el bot ya tiene mensajes de contenido en este canal (evitar duplicados)
+            # Se excluyen mensajes de sistema (pin, join, etc.)
+            hay_mensajes = [
+                m async for m in canal.history(limit=10)
+                if m.author == interaction.guild.me and m.type == discord.MessageType.default
+            ]
             if hay_mensajes:
                 omitidos += 1
                 continue
