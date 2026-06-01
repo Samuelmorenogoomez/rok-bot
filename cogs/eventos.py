@@ -1,0 +1,276 @@
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from config import COLOR_BOT
+from db import database as db
+
+ZONA = ZoneInfo('Europe/Madrid')
+
+DIAS_NOMBRE = {
+    0: 'Lunes', 1: 'Martes', 2: 'Miércoles',
+    3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo',
+}
+DIAS_EMOJI = {
+    0: '🔵', 1: '🔵', 2: '🔵', 3: '🔵', 4: '🔵', 5: '🟣', 6: '🟣',
+}
+NOMBRES_DIAS = {
+    '0,1,2,3,4,5,6': 'Todos los días',
+    '0,1,2,3,4':      'Lun–Vie',
+    '0': 'Lunes', '1': 'Martes', '2': 'Miércoles',
+    '3': 'Jueves', '4': 'Viernes', '5': 'Sábado', '6': 'Domingo',
+}
+
+
+async def build_semana_embed(guild_id: str) -> discord.Embed:
+    now    = datetime.now(ZONA)
+    events = await db.get_guild_events(guild_id)
+
+    embed = discord.Embed(
+        title='📅  Eventos de la semana',
+        color=0x5865F2,
+        timestamp=datetime.now(),
+    )
+
+    tiene_algo = False
+    for offset in range(7):
+        dia_dt  = now + timedelta(days=offset)
+        dia_idx = str(dia_dt.weekday())
+        nombre  = DIAS_NOMBRE.get(str(dia_dt.weekday()), '')
+        emoji   = DIAS_EMOJI[dia_dt.weekday()]
+        fecha   = dia_dt.strftime('%d/%m')
+        hoy     = '  *(hoy)*' if offset == 0 else ('  *(mañana)*' if offset == 1 else '')
+
+        ev_dia = [
+            ev for ev in events
+            if dia_idx in ev['dias'].split(',')
+        ]
+        ev_dia.sort(key=lambda e: e['hora'])
+
+        if ev_dia:
+            tiene_algo = True
+            lineas = [f'🕐 **{ev["hora"]}** — {ev["nombre"]}' for ev in ev_dia]
+            embed.add_field(
+                name=f'{emoji} {nombre} {fecha}{hoy}',
+                value='\n'.join(lineas),
+                inline=False,
+            )
+
+    if not tiene_algo:
+        embed.description = '_No hay eventos programados esta semana.\nUsa `/evento-crear` para añadir._'
+
+    embed.set_footer(text=f'Actualizado · {now.strftime("%H:%M")} · Hora de España')
+    return embed
+
+
+class Eventos(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.check_eventos.start()
+        self.actualizar_semana.start()
+
+    def cog_unload(self):
+        self.check_eventos.cancel()
+        self.actualizar_semana.cancel()
+
+    # ── Tarea: avisos automáticos ─────────────────────────────────────────────
+
+    @tasks.loop(minutes=1)
+    async def check_eventos(self):
+        now          = datetime.now(ZONA)
+        today        = now.strftime('%Y-%m-%d')
+        current_time = now.strftime('%H:%M')
+        current_day  = str(now.weekday())
+
+        eventos = await db.get_all_active_events()
+        for ev in eventos:
+            if current_day not in ev['dias'].split(','):
+                continue
+
+            canal = self.bot.get_channel(int(ev['canal_id']))
+            if not canal:
+                continue
+
+            rol_mention = f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
+            event_dt    = datetime.strptime(ev['hora'], '%H:%M').replace(
+                year=now.year, month=now.month, day=now.day, tzinfo=ZONA
+            )
+            aviso_time = (event_dt - timedelta(minutes=30)).strftime('%H:%M')
+
+            if current_time == aviso_time and ev['dia_ultimo_aviso'] != today:
+                await db.update_event_aviso(ev['id'], today)
+                embed = discord.Embed(
+                    title=f'⏰ {ev["nombre"]} — en 30 minutos',
+                    description=ev['descripcion'] or '',
+                    color=COLOR_BOT,
+                )
+                embed.add_field(name='Hora', value=f'{ev["hora"]} (España)')
+                await canal.send(content=rol_mention, embed=embed)
+
+            elif current_time == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
+                await db.update_event_ejecucion(ev['id'], today)
+                embed = discord.Embed(
+                    title=f'🚨 {ev["nombre"]} — ¡AHORA!',
+                    description=ev['descripcion'] or '',
+                    color=0xFF0000,
+                )
+                await canal.send(content=rol_mention, embed=embed)
+
+    @check_eventos.before_loop
+    async def before_check(self):
+        await self.bot.wait_until_ready()
+
+    # ── Tarea: actualizar embed de semana ────────────────────────────────────
+
+    @tasks.loop(hours=1)
+    async def actualizar_semana(self):
+        for guild in self.bot.guilds:
+            await self._refrescar_semana(guild)
+
+    @actualizar_semana.before_loop
+    async def before_semana(self):
+        await self.bot.wait_until_ready()
+
+    async def _refrescar_semana(self, guild: discord.Guild):
+        canal_id  = await db.get_config(str(guild.id), 'eventos_semana_canal')
+        mensaje_id = await db.get_config(str(guild.id), 'eventos_semana_mensaje')
+        if not canal_id:
+            return
+
+        canal = guild.get_channel(int(canal_id))
+        if not canal:
+            return
+
+        embed = await build_semana_embed(str(guild.id))
+
+        if mensaje_id:
+            try:
+                msg = await canal.fetch_message(int(mensaje_id))
+                await msg.edit(embed=embed)
+                return
+            except discord.NotFound:
+                pass
+
+        msg = await canal.send(embed=embed)
+        await db.set_config(str(guild.id), 'eventos_semana_mensaje', str(msg.id))
+        try:
+            await msg.pin()
+        except Exception:
+            pass
+
+    # ── Comandos ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(name='canal-eventos', description='[ADMIN] Activa el resumen semanal automático de eventos en un canal')
+    @app_commands.describe(canal='Canal donde se publicará el resumen semanal')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def canal_eventos(self, interaction: discord.Interaction, canal: discord.TextChannel):
+        await db.set_config(str(interaction.guild_id), 'eventos_semana_canal', str(canal.id))
+        await db.set_config(str(interaction.guild_id), 'eventos_semana_mensaje', '')
+
+        await interaction.response.defer()
+        await self._refrescar_semana(interaction.guild)
+        await interaction.followup.send(
+            f'✅ Canal de eventos configurado en {canal.mention}. El resumen se actualiza cada hora automáticamente.',
+            ephemeral=True,
+        )
+
+    @app_commands.command(name='evento-crear', description='[ADMIN] Crea un recordatorio de evento recurrente')
+    @app_commands.describe(
+        nombre='Nombre del evento (ej: Ark of Osiris)',
+        hora='Hora en formato HH:MM — hora de España',
+        dia='Día(s) de la semana',
+        canal='Canal donde se enviará el aviso',
+        rol='Rol al que se mencionará (opcional, por defecto @everyone)',
+        descripcion='Descripción opcional',
+    )
+    @app_commands.choices(dia=[
+        app_commands.Choice(name='Todos los días',  value='0,1,2,3,4,5,6'),
+        app_commands.Choice(name='Lunes a Viernes', value='0,1,2,3,4'),
+        app_commands.Choice(name='Lunes',           value='0'),
+        app_commands.Choice(name='Martes',          value='1'),
+        app_commands.Choice(name='Miércoles',       value='2'),
+        app_commands.Choice(name='Jueves',          value='3'),
+        app_commands.Choice(name='Viernes',         value='4'),
+        app_commands.Choice(name='Sábado',          value='5'),
+        app_commands.Choice(name='Domingo',         value='6'),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def evento_crear(
+        self,
+        interaction: discord.Interaction,
+        nombre: str,
+        hora: str,
+        dia: str,
+        canal: discord.TextChannel,
+        rol: discord.Role = None,
+        descripcion: str = '',
+    ):
+        try:
+            datetime.strptime(hora, '%H:%M')
+        except ValueError:
+            await interaction.response.send_message('❌ Formato de hora incorrecto. Usa HH:MM (ej: 20:00)', ephemeral=True)
+            return
+
+        await db.create_event(
+            guild_id=str(interaction.guild_id),
+            canal_id=str(canal.id),
+            rol_ping=str(rol.id) if rol else '',
+            nombre=nombre,
+            descripcion=descripcion,
+            hora=hora,
+            dias=dia,
+        )
+
+        embed = discord.Embed(title='✅ Evento creado', color=COLOR_BOT)
+        embed.add_field(name='Nombre', value=nombre, inline=True)
+        embed.add_field(name='Hora',   value=f'{hora} (España)', inline=True)
+        embed.add_field(name='Días',   value=NOMBRES_DIAS.get(dia, dia), inline=True)
+        embed.add_field(name='Canal',  value=canal.mention, inline=True)
+        if rol:
+            embed.add_field(name='Ping', value=rol.mention, inline=True)
+        embed.set_footer(text='Avisos automáticos: 30 min antes y a la hora exacta')
+        await interaction.response.send_message(embed=embed)
+
+        # Actualizar el resumen semanal si está configurado
+        await self._refrescar_semana(interaction.guild)
+
+    @app_commands.command(name='evento-lista', description='Muestra todos los eventos programados')
+    async def evento_lista(self, interaction: discord.Interaction):
+        eventos = await db.get_guild_events(str(interaction.guild_id))
+        if not eventos:
+            await interaction.response.send_message('No hay eventos. Usa `/evento-crear`.', ephemeral=True)
+            return
+
+        embed = discord.Embed(title='📅 Eventos programados', color=COLOR_BOT)
+        for ev in eventos:
+            canal = self.bot.get_channel(int(ev['canal_id']))
+            embed.add_field(
+                name=f'`#{ev["id"]}` {ev["nombre"]}',
+                value=f'🕐 **{ev["hora"]}** · {NOMBRES_DIAS.get(ev["dias"], ev["dias"])} · {canal.mention if canal else "canal eliminado"}',
+                inline=False,
+            )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name='evento-eliminar', description='[ADMIN] Elimina un evento programado')
+    @app_commands.describe(id='ID del evento (ver /evento-lista)')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def evento_eliminar(self, interaction: discord.Interaction, id: int):
+        ok = await db.delete_event(str(interaction.guild_id), id)
+        if ok:
+            await self._refrescar_semana(interaction.guild)
+            await interaction.response.send_message(f'🗑️ Evento `#{id}` eliminado.')
+        else:
+            await interaction.response.send_message(f'❌ No se encontró el evento `#{id}`.', ephemeral=True)
+
+    @canal_eventos.error
+    @evento_crear.error
+    @evento_eliminar.error
+    async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message('❌ No tienes permisos para este comando.', ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Eventos(bot))
