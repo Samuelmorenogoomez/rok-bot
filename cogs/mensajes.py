@@ -452,6 +452,7 @@ async def msg_mge_resultados(canal: discord.TextChannel):
 
 
 async def msg_reclutamiento(canal: discord.TextChannel):
+    from cogs.reclutamiento import PanelReclutamientoView
     embed = discord.Embed(
         title=f'⚔️ Reclutamiento — {ALIANZA_FULL}',
         description=(
@@ -480,7 +481,7 @@ async def msg_reclutamiento(canal: discord.TextChannel):
         inline=False,
     )
     embed.set_footer(text=f'El proceso es confidencial · {ALIANZA_TAG} · Reino {REINO}')
-    return await canal.send(embed=embed)
+    return await canal.send(embed=embed, view=PanelReclutamientoView())
 
 
 async def msg_scouting(canal: discord.TextChannel):
@@ -553,6 +554,12 @@ class Mensajes(commands.Cog):
 
             fn = MENSAJES_POR_CANAL.get(nombre_limpio)
             if not fn:
+                omitidos += 1
+                continue
+
+            # Saltar si el bot ya tiene mensajes en este canal (evitar duplicados)
+            hay_mensajes = [m async for m in canal.history(limit=5) if m.author == interaction.guild.me]
+            if hay_mensajes:
                 omitidos += 1
                 continue
 

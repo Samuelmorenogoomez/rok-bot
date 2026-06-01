@@ -70,6 +70,21 @@ class Miembros(commands.Cog):
         app_commands.Choice(name='🔀 Mixto',       value='mixto'),
     ])
     async def registrar(self, interaction: discord.Interaction, gobernador: str, poder: str, tropa: str):
+        # Solo pueden registrarse quienes ya pasaron por reclutamiento (tienen 🔰 Nuevo o 🌿 Miembro)
+        rol_nuevo   = discord.utils.get(interaction.guild.roles, name='🔰 Nuevo')
+        rol_miembro = discord.utils.get(interaction.guild.roles, name='🌿 Miembro')
+        tiene_acceso = (
+            (rol_nuevo   and rol_nuevo   in interaction.user.roles) or
+            (rol_miembro and rol_miembro in interaction.user.roles)
+        )
+        if not tiene_acceso:
+            await interaction.response.send_message(
+                '❌ Para registrarte primero debes solicitar el ingreso en el canal **⚔️│reclutamiento** '
+                'y ser aprobado por el liderazgo.',
+                ephemeral=True,
+            )
+            return
+
         poder_int = parse_poder(poder)
         if poder_int < 0:
             await interaction.response.send_message(
