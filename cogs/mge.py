@@ -189,13 +189,21 @@ class Mge(commands.Cog):
 
     # ── /mge-inscribir-externo ────────────────────────────────────────────────
 
+    async def _ac_externos(self, interaction: discord.Interaction, current: str):
+        externos = await db.get_miembros_externos(str(interaction.guild_id))
+        return [
+            app_commands.Choice(name=e['gobernador'], value=e['gobernador'])
+            for e in externos
+            if current.lower() in e['gobernador'].lower()
+        ][:25]
+
     @app_commands.command(name='mge-inscribir-externo', description='[ADMIN] Inscribe a un gobernador externo (sin Discord) en un MGE')
     @app_commands.describe(
         evento='MGE al que inscribir',
-        gobernador='Nombre del gobernador externo',
+        gobernador='Gobernador externo registrado',
         cabezas='Cabezas doradas disponibles (opcional)',
     )
-    @app_commands.autocomplete(evento=_ac_eventos)
+    @app_commands.autocomplete(evento=_ac_eventos, gobernador=_ac_externos)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mge_inscribir_externo(self, interaction: discord.Interaction,
                                     evento: str, gobernador: str, cabezas: int = 0):
@@ -270,7 +278,7 @@ class Mge(commands.Cog):
         gobernador_ext='Nombre de gobernador externo (sin cuenta Discord)',
         meta='Meta de poder individual (vacío = usa la meta del MGE)',
     )
-    @app_commands.autocomplete(evento=_ac_eventos)
+    @app_commands.autocomplete(evento=_ac_eventos, gobernador_ext=_ac_externos)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mge_asignar(self, interaction: discord.Interaction, evento: str,
                           posicion: int, usuario: discord.Member = None,

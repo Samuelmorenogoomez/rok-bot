@@ -282,6 +282,16 @@ async def get_all_members(guild_id: str) -> list:
         return await cursor.fetchall()
 
 
+async def get_miembros_externos(guild_id: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM miembros WHERE guild_id=? AND user_id LIKE 'ext_%' ORDER BY gobernador ASC",
+            (guild_id,)
+        )
+        return await cursor.fetchall()
+
+
 # ─── Eventos ──────────────────────────────────────────────────────────────────
 
 async def create_event(guild_id: str, canal_id: str, rol_ping: str, nombre: str,
