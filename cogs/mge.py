@@ -187,6 +187,42 @@ class Mge(commands.Cog):
         nombre = ev['nombre'] if ev else f'MGE #{evento}'
         await interaction.response.send_message(f'✅ Inscripción en **{nombre}** cancelada.', ephemeral=True)
 
+    # ── /mge-inscribir-externo ────────────────────────────────────────────────
+
+    @app_commands.command(name='mge-inscribir-externo', description='[ADMIN] Inscribe a un gobernador externo (sin Discord) en un MGE')
+    @app_commands.describe(
+        evento='MGE al que inscribir',
+        gobernador='Nombre del gobernador externo',
+        cabezas='Cabezas doradas disponibles (opcional)',
+    )
+    @app_commands.autocomplete(evento=_ac_eventos)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mge_inscribir_externo(self, interaction: discord.Interaction,
+                                    evento: str, gobernador: str, cabezas: int = 0):
+        ev = await db.mge_get_evento(int(evento))
+        if not ev or not ev['activo']:
+            await interaction.response.send_message('❌ MGE no encontrado o cerrado.', ephemeral=True)
+            return
+
+        user_id_ext = 'ext_' + gobernador.lower().replace(' ', '_')
+        miembro     = await db.get_member(str(interaction.guild_id), user_id_ext)
+        poder       = miembro['poder'] if miembro else 0
+
+        ok = await db.mge_inscribir(int(evento), str(interaction.guild_id),
+                                    user_id_ext, gobernador, poder, cabezas)
+        if not ok:
+            await interaction.response.send_message(
+                f'ℹ️ **{gobernador}** ya está inscrito en **{ev["nombre"]}**.', ephemeral=True
+            )
+            return
+
+        inscritos = await db.mge_count_inscritos(int(evento))
+        await interaction.response.send_message(
+            f'✅ **{gobernador}** _(externo)_ inscrito en **{ev["nombre"]}** · '
+            f'👑 {cabezas} cabezas · {inscritos} inscritos en total.',
+            ephemeral=True,
+        )
+
     # ── /mge-participantes ─────────────────────────────────────────────────────
 
     @app_commands.command(name='mge-participantes', description='[ADMIN] Lista los inscritos en un MGE')
@@ -230,13 +266,22 @@ class Mge(commands.Cog):
     @app_commands.describe(
         evento='MGE al que asignar',
         posicion='Posición que ocupa (1 = top 1, 2 = top 2...)',
-        usuario='Miembro al que asignar esa posición',
-        meta='Meta de poder individual para este participante (vacío = usa la meta del MGE)',
+        usuario='Miembro de Discord a asignar (usa gobernador_ext si no está en el servidor)',
+        gobernador_ext='Nombre de gobernador externo (sin cuenta Discord)',
+        meta='Meta de poder individual (vacío = usa la meta del MGE)',
     )
     @app_commands.autocomplete(evento=_ac_eventos)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mge_asignar(self, interaction: discord.Interaction, evento: str,
-                          posicion: int, usuario: discord.Member, meta: str = ''):
+                          posicion: int, usuario: discord.Member = None,
+                          gobernador_ext: str = None, meta: str = ''):
+        if not usuario and not gobernador_ext:
+            await interaction.response.send_message(
+                '❌ Debes indicar `usuario` (miembro Discord) o `gobernador_ext` (externo sin Discord).',
+                ephemeral=True,
+            )
+            return
+
         ev = await db.mge_get_evento(int(evento))
         if not ev or not ev['activo']:
             await interaction.response.send_message('❌ MGE no encontrado o cerrado.', ephemeral=True)
@@ -249,7 +294,6 @@ class Mge(commands.Cog):
             )
             return
 
-        # Meta individual o la del MGE por defecto
         if meta:
             meta_int = parse_poder(meta)
             if meta_int < 0:
@@ -260,18 +304,24 @@ class Mge(commands.Cog):
         else:
             meta_int = ev['poder_min']
 
-        miembro    = await db.get_member(str(interaction.guild_id), str(usuario.id))
-        gobernador = miembro['gobernador'] if miembro else usuario.display_name
+        # Resolver user_id y nombre de gobernador
+        if usuario:
+            miembro    = await db.get_member(str(interaction.guild_id), str(usuario.id))
+            gobernador = miembro['gobernador'] if miembro else usuario.display_name
+            user_id    = str(usuario.id)
+        else:
+            gobernador = gobernador_ext
+            user_id    = 'ext_' + gobernador_ext.lower().replace(' ', '_')
 
-        # poder se reutiliza para guardar la meta individual del participante
         await db.mge_seleccionar(int(evento), str(interaction.guild_id),
-                                 str(usuario.id), gobernador, meta_int, posicion)
+                                 user_id, gobernador, meta_int, posicion)
 
         seleccionados = await db.mge_get_seleccionados(int(evento))
         medalla = ['🥇', '🥈', '🥉'][posicion - 1] if posicion <= 3 else f'**#{posicion}**'
+        ext_tag = ' _(externo)_' if not usuario else ''
 
         await interaction.response.send_message(
-            f'✅ {medalla} **{gobernador}** → posición **{posicion}** · '
+            f'✅ {medalla} **{gobernador}**{ext_tag} → posición **{posicion}** · '
             f'Meta: **{fmt_poder(meta_int)}** · '
             f'{len(seleccionados)}/{ev["max_plazas"]} plazas cubiertas.',
             ephemeral=True,
@@ -583,6 +633,7 @@ class Mge(commands.Cog):
     @mge_cerrar.error
     @mge_participantes.error
     @mge_asignar.error
+    @mge_inscribir_externo.error
     @mge_quitar.error
     @mge_anunciar.error
     @mge_publicar.error
