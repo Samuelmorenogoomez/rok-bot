@@ -131,9 +131,12 @@ class Mge(commands.Cog):
 
     @app_commands.command(name='mge-inscribir', description='Apúntate a un MGE para que el liderazgo te tenga en cuenta')
     @solo_en_canal('mge-inscripciones')
-    @app_commands.describe(evento='MGE al que quieres apuntarte')
+    @app_commands.describe(
+        evento='MGE al que quieres apuntarte',
+        cabezas='Cabezas doradas que tienes disponibles para el evento',
+    )
     @app_commands.autocomplete(evento=_ac_eventos)
-    async def mge_inscribir(self, interaction: discord.Interaction, evento: str):
+    async def mge_inscribir(self, interaction: discord.Interaction, evento: str, cabezas: int = 0):
         miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
         if not miembro:
             await interaction.response.send_message(
@@ -148,7 +151,7 @@ class Mge(commands.Cog):
             return
 
         ok = await db.mge_inscribir(int(evento), str(interaction.guild_id), str(interaction.user.id),
-                                    miembro['gobernador'], miembro['poder'])
+                                    miembro['gobernador'], miembro['poder'], cabezas)
         if not ok:
             await interaction.response.send_message(
                 f'ℹ️ Ya estás inscrito en **{ev["nombre"]}**.', ephemeral=True
@@ -158,13 +161,14 @@ class Mge(commands.Cog):
         inscritos = await db.mge_count_inscritos(int(evento))
         embed = discord.Embed(
             title='✅ Inscripción registrada',
-            description=f'El liderazgo revisará las inscripciones y asignará las plazas.',
+            description='El liderazgo revisará las inscripciones y asignará las plazas.',
             color=COLOR_BOT,
         )
-        embed.add_field(name='MGE',        value=ev['nombre'],              inline=True)
-        embed.add_field(name='Gobernador', value=miembro['gobernador'],     inline=True)
-        embed.add_field(name='Inscritos',  value=str(inscritos),            inline=True)
-        embed.add_field(name='🎯 Meta',    value=fmt_poder(ev['poder_min']), inline=True)
+        embed.add_field(name='MGE',               value=ev['nombre'],               inline=True)
+        embed.add_field(name='Gobernador',         value=miembro['gobernador'],      inline=True)
+        embed.add_field(name='👑 Cabezas doradas', value=str(cabezas),               inline=True)
+        embed.add_field(name='🎯 Meta',            value=fmt_poder(ev['poder_min']), inline=True)
+        embed.add_field(name='Inscritos',          value=str(inscritos),             inline=True)
         embed.set_footer(text=f'Usa /mge-salir para cancelar · {ALIANZA_TAG}')
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -206,11 +210,13 @@ class Mge(commands.Cog):
         if not inscritos:
             embed.description += '\n\n_Nadie se ha inscrito todavía._'
         else:
+            total_cabezas = sum(ins['cabezas'] or 0 for ins in inscritos)
             lineas = [
-                f'**{i}.** **{ins["gobernador"]}** — {fmt_poder(ins["poder"])}'
+                f'**{i}.** **{ins["gobernador"]}** — {fmt_poder(ins["poder"])} · 👑 {ins["cabezas"] or 0}'
                 for i, ins in enumerate(inscritos, 1)
             ]
-            embed.add_field(name='Lista (por poder)', value='\n'.join(lineas[:25]), inline=False)
+            embed.add_field(name='Lista (por poder) · 👑 = cabezas doradas', value='\n'.join(lineas[:25]), inline=False)
+            embed.add_field(name='👑 Total cabezas doradas', value=str(total_cabezas), inline=True)
             if len(inscritos) > 25:
                 embed.set_footer(text=f'Mostrando 25 de {len(inscritos)} · {ALIANZA_TAG}')
             else:

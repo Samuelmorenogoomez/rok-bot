@@ -171,6 +171,12 @@ async def init_db():
             );
         ''')
         await db.commit()
+        # Migración: añadir cabezas a mge_inscripciones si no existe
+        try:
+            await db.execute('ALTER TABLE mge_inscripciones ADD COLUMN cabezas INTEGER DEFAULT 0')
+            await db.commit()
+        except Exception:
+            pass
 
 
 # ─── Cola de títulos ───────────────────────────────────────────────────────────
@@ -577,12 +583,13 @@ async def mge_cerrar_evento(guild_id: str, evento_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-async def mge_inscribir(evento_id: int, guild_id: str, user_id: str, gobernador: str, poder: int) -> bool:
+async def mge_inscribir(evento_id: int, guild_id: str, user_id: str,
+                        gobernador: str, poder: int, cabezas: int = 0) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
-                'INSERT INTO mge_inscripciones (evento_id, guild_id, user_id, gobernador, poder) VALUES (?,?,?,?,?)',
-                (evento_id, guild_id, user_id, gobernador, poder)
+                'INSERT INTO mge_inscripciones (evento_id, guild_id, user_id, gobernador, poder, cabezas) VALUES (?,?,?,?,?,?)',
+                (evento_id, guild_id, user_id, gobernador, poder, cabezas)
             )
             await db.commit()
             return True
