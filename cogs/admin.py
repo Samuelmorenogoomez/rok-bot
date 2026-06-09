@@ -271,10 +271,26 @@ class Admin(commands.Cog):
                 )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name='sync-comandos', description='[ADMIN] Fuerza la resincronización de todos los comandos slash')
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync_comandos(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        # Limpiar comandos globales y sincronizar solo al servidor
+        self.bot.tree.clear_commands(guild=None)
+        await self.bot.tree.sync()
+        self.bot.tree.copy_global_to(guild=guild)
+        synced = await self.bot.tree.sync(guild=guild)
+        await interaction.followup.send(
+            f'✅ {len(synced)} comandos sincronizados. Haz **Ctrl+R** en Discord para verlos actualizados.',
+            ephemeral=True,
+        )
+
     @panel.error
     @anunciar.error
     @resumen_miembros.error
     @config_canal.error
+    @sync_comandos.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message('❌ No tienes permisos para este comando.', ephemeral=True)
