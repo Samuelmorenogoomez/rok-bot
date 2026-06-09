@@ -562,10 +562,11 @@ class Mge(commands.Cog):
             selec = await db.mge_get_seleccionados(int(e['id']))
             fecha = e['created_at'][:10] if e['created_at'] else '—'
             if selec:
-                top3 = ' · '.join(
-                    f'{medallas[s["posicion"]-1] if s["posicion"] <= 3 else f"#{s[\"posicion\"]}"} {s["gobernador"]}'
-                    for s in selec[:3]
-                )
+                partes = []
+                for s in selec[:3]:
+                    pos_str = medallas[s['posicion'] - 1] if s['posicion'] <= 3 else f'#{s["posicion"]}'
+                    partes.append(f'{pos_str} {s["gobernador"]}')
+                top3 = ' · '.join(partes)
             else:
                 top3 = '_Sin participantes_'
             embed.add_field(
