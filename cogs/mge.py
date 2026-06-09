@@ -325,6 +325,132 @@ class Mge(commands.Cog):
         embed.set_footer(text=f'{len(seleccionados)}/{ev["max_plazas"]} plazas · {ALIANZA_TAG} · Reino {REINO}')
         await interaction.response.send_message(embed=embed)
 
+    # ── /mge-anunciar ─────────────────────────────────────────────────────────
+
+    @app_commands.command(name='mge-anunciar', description='[ADMIN] Anuncia un MGE en el canal de anuncios explicando cómo inscribirse')
+    @app_commands.describe(
+        evento='MGE a anunciar',
+        tropa='Tipo de tropa al que va dirigido el MGE (vacío = todas las tropas)',
+        canal='Canal donde publicar (vacío = busca #anuncios automáticamente)',
+    )
+    @app_commands.autocomplete(evento=_ac_eventos)
+    @app_commands.choices(tropa=[
+        app_commands.Choice(name='⚔️ Infantería',  value='infanteria'),
+        app_commands.Choice(name='🐴 Caballería',  value='caballeria'),
+        app_commands.Choice(name='🏹 Arqueros',    value='arqueros'),
+        app_commands.Choice(name='⚙️ Maquinaria', value='maquinaria'),
+        app_commands.Choice(name='🔀 Mixto',       value='mixto'),
+        app_commands.Choice(name='🌐 Todas las tropas', value='todas'),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mge_anunciar(self, interaction: discord.Interaction, evento: str,
+                           tropa: str = 'todas', canal: discord.TextChannel = None):
+        ev = await db.mge_get_evento(int(evento))
+        if not ev or not ev['activo']:
+            await interaction.response.send_message('❌ MGE no encontrado o cerrado.', ephemeral=True)
+            return
+
+        # Resolver canal destino
+        if not canal:
+            canal = next(
+                (c for c in interaction.guild.text_channels
+                 if 'anuncios' in c.name and 'kvk' not in c.name and 'ark' not in c.name),
+                None,
+            )
+        if not canal:
+            await interaction.response.send_message(
+                '❌ No encontré canal de anuncios. Especifica el canal con el parámetro `canal`.',
+                ephemeral=True,
+            )
+            return
+
+        # Canal de inscripciones
+        canal_inscripciones = next(
+            (c for c in interaction.guild.text_channels if 'mge-inscripciones' in c.name), None
+        )
+
+        # Datos de tropa
+        TROPAS_FULL = {
+            'infanteria': '⚔️ Infantería',
+            'caballeria': '🐴 Caballería',
+            'arqueros':   '🏹 Arqueros',
+            'maquinaria': '⚙️ Maquinaria',
+            'mixto':      '🔀 Mixto',
+            'todas':      '🌐 Todas las tropas',
+        }
+        nombre_tropa = TROPAS_FULL.get(tropa, '🌐 Todas las tropas')
+
+        # Mencionar el rol de tropa si aplica
+        mencion_tropa = ''
+        if tropa != 'todas':
+            roles_nombres = {
+                'infanteria': '🗡️ Infantería',
+                'caballeria': '🐴 Caballería',
+                'arqueros':   '🏹 Arqueros',
+                'maquinaria': '⚙️ Maquinaria',
+                'mixto':      '🔱 Mixto',
+            }
+            rol_tropa = discord.utils.get(interaction.guild.roles, name=roles_nombres.get(tropa, ''))
+            if rol_tropa:
+                mencion_tropa = rol_tropa.mention
+
+        seleccionados = await db.mge_get_seleccionados(int(evento))
+        inscritos     = await db.mge_count_inscritos(int(evento))
+
+        canal_ref = canal_inscripciones.mention if canal_inscripciones else '**📝│mge-inscripciones**'
+
+        embed = discord.Embed(
+            title=f'🔥 {ev["nombre"]} — ¡Inscripciones abiertas!',
+            description=(
+                f'**{ALIANZA_FULL} · Reino {REINO}**\n\n'
+                f'¡Ha comenzado el período de inscripciones para el **{ev["nombre"]}**!\n'
+                + (f'Este MGE está orientado a **{nombre_tropa}**.\n' if tropa != 'todas' else '')
+                + (f'\n_{ev["descripcion"]}_' if ev['descripcion'] else '')
+            ),
+            color=0xFFD700,
+        )
+
+        embed.add_field(
+            name='📊 Detalles del evento',
+            value=(
+                f'🎯 **Meta de poder:** {fmt_poder(ev["poder_min"])}\n'
+                f'👥 **Plazas:** {ev["max_plazas"]} participantes\n'
+                f'🗡️ **Tropa:** {nombre_tropa}'
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name='📋 Cómo inscribirse',
+            value=(
+                f'**1.** Ve al canal {canal_ref}\n'
+                f'**2.** Usa `/mge-lista` para ver el evento y su meta\n'
+                f'**3.** Usa `/mge-inscribir` y selecciona **{ev["nombre"]}**\n'
+                f'**4.** El liderazgo revisará y asignará las {ev["max_plazas"]} plazas\n\n'
+                f'> ⚠️ Necesitas tener el perfil registrado con `/registrar` para poder inscribirte.'
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name='⏳ Estado actual',
+            value=(
+                f'📝 **Inscritos:** {inscritos}\n'
+                f'🏆 **Plazas asignadas:** {len(seleccionados)}/{ev["max_plazas"]}'
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text=f'Usa /mge-salir para cancelar tu inscripción · {ALIANZA_TAG} · Reino {REINO}')
+
+        content = mencion_tropa if mencion_tropa else None
+        await canal.send(content=content, embed=embed)
+
+        await interaction.response.send_message(
+            f'✅ Anuncio del **{ev["nombre"]}** publicado en {canal.mention}.',
+            ephemeral=True,
+        )
+
     # ── /mge-publicar ──────────────────────────────────────────────────────────
 
     @app_commands.command(name='mge-publicar', description='[ADMIN] Publica la lista final con metas individuales y menciona a todos')
@@ -384,6 +510,7 @@ class Mge(commands.Cog):
     @mge_participantes.error
     @mge_asignar.error
     @mge_quitar.error
+    @mge_anunciar.error
     @mge_publicar.error
     @mge_seleccionados.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
