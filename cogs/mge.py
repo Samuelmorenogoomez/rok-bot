@@ -136,7 +136,7 @@ class Mge(commands.Cog):
         cabezas='Cabezas doradas que tienes disponibles para el evento',
     )
     @app_commands.autocomplete(evento=_ac_eventos)
-    async def mge_inscribir(self, interaction: discord.Interaction, evento: str, cabezas: int = 0):
+    async def mge_inscribir(self, interaction: discord.Interaction, evento: str, cabezas: int):
         miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
         if not miembro:
             await interaction.response.send_message(
@@ -206,7 +206,7 @@ class Mge(commands.Cog):
     @app_commands.autocomplete(evento=_ac_eventos, gobernador=_ac_externos)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def mge_inscribir_externo(self, interaction: discord.Interaction,
-                                    evento: str, gobernador: str, cabezas: int = 0):
+                                    evento: str, gobernador: str, cabezas: int):
         ev = await db.mge_get_evento(int(evento))
         if not ev or not ev['activo']:
             await interaction.response.send_message('❌ MGE no encontrado o cerrado.', ephemeral=True)
