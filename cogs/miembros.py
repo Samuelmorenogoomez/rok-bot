@@ -111,6 +111,51 @@ class Miembros(commands.Cog):
         embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
         await interaction.response.send_message(embed=embed)
 
+    # ── /registrar-miembro ─────────────────────────────────────────────────────
+
+    @app_commands.command(name='registrar-miembro', description='[ADMIN] Registra a otro miembro en su nombre')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        usuario='Miembro de Discord a registrar',
+        gobernador='Nombre de gobernador en el juego',
+        poder='Poder actual (ej: 150M, 50000K, 150000000)',
+        tropa='Tipo de tropa principal',
+    )
+    @app_commands.choices(tropa=[
+        app_commands.Choice(name='⚔️ Infantería',  value='infanteria'),
+        app_commands.Choice(name='🐴 Caballería',  value='caballeria'),
+        app_commands.Choice(name='🏹 Arqueros',    value='arqueros'),
+        app_commands.Choice(name='⚙️ Maquinaria', value='maquinaria'),
+        app_commands.Choice(name='🔀 Mixto',       value='mixto'),
+    ])
+    async def registrar_miembro(self, interaction: discord.Interaction,
+                                usuario: discord.Member, gobernador: str, poder: str, tropa: str):
+        poder_int = parse_poder(poder)
+        if poder_int < 0:
+            await interaction.response.send_message(
+                '❌ Formato de poder incorrecto. Usa: `150M`, `50000K` o `150000000`',
+                ephemeral=True,
+            )
+            return
+
+        await db.upsert_member(
+            str(interaction.guild_id),
+            str(usuario.id),
+            usuario.display_name,
+            gobernador,
+            poder_int,
+            tropa,
+        )
+        await asignar_rol_tropa(usuario, tropa)
+
+        embed = discord.Embed(title=f'✅ {usuario.display_name} registrado', color=COLOR_BOT)
+        embed.set_thumbnail(url=usuario.display_avatar.url)
+        embed.add_field(name='Gobernador', value=gobernador,           inline=True)
+        embed.add_field(name='Poder',      value=fmt_poder(poder_int), inline=True)
+        embed.add_field(name='Tropa',      value=TROPAS[tropa],        inline=True)
+        embed.set_footer(text=f'Registrado por {interaction.user.display_name} · {ALIANZA_TAG} · Reino {REINO}')
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # ── /perfil ────────────────────────────────────────────────────────────────
 
     @app_commands.command(name='perfil', description='Muestra el perfil de un miembro')
@@ -284,6 +329,7 @@ class Miembros(commands.Cog):
 
     @ausentes.error
     @sin_registrar.error
+    @registrar_miembro.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message('❌ No tienes permisos para este comando.', ephemeral=True)
