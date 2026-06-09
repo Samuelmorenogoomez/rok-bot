@@ -509,6 +509,73 @@ class Mge(commands.Cog):
         else:
             await interaction.response.send_message(content=menciones, embed=embed)
 
+    # ── /mge-historial ─────────────────────────────────────────────────────────
+
+    @app_commands.command(name='mge-historial', description='Historial de MGEs de un gobernador (o resumen general)')
+    @app_commands.describe(usuario='Gobernador a consultar (vacío = lista todos los MGEs pasados)')
+    async def mge_historial(self, interaction: discord.Interaction, usuario: discord.Member = None):
+        guild_id = str(interaction.guild_id)
+        medallas = ['🥇', '🥈', '🥉']
+
+        # ── Con usuario: historial personal ───────────────────────────────────
+        if usuario:
+            historial = await db.mge_get_historial_usuario(guild_id, str(usuario.id))
+            miembro   = await db.get_member(guild_id, str(usuario.id))
+            nombre    = miembro['gobernador'] if miembro else usuario.display_name
+
+            embed = discord.Embed(
+                title=f'📜 Historial MGE — {nombre}',
+                color=COLOR_BOT,
+            )
+            embed.set_thumbnail(url=usuario.display_avatar.url)
+
+            if not historial:
+                embed.description = '_Este gobernador no ha participado en ningún MGE todavía._'
+            else:
+                lineas = []
+                for h in historial:
+                    pos   = medallas[h['posicion'] - 1] if h['posicion'] <= 3 else f'**#{h["posicion"]}**'
+                    fecha = h['created_at'][:10] if h['created_at'] else '—'
+                    lineas.append(
+                        f'{pos} **{h["nombre"]}** — 🎯 {fmt_poder(h["meta_individual"])} · 📅 {fecha}'
+                    )
+                embed.description = '\n'.join(lineas)
+                embed.set_footer(text=f'{len(historial)} participaciones · {ALIANZA_TAG} · Reino {REINO}')
+
+            await interaction.response.send_message(embed=embed)
+            return
+
+        # ── Sin usuario: resumen de todos los MGEs cerrados ───────────────────
+        cerrados = await db.mge_get_eventos_cerrados(guild_id)
+        if not cerrados:
+            await interaction.response.send_message(
+                '📋 No hay MGEs finalizados todavía.', ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title='📜 Historial de MGEs',
+            description=f'*{ALIANZA_TAG} · Reino {REINO}*\nUsa `/mge-historial usuario:@alguien` para ver el historial personal.',
+            color=0x95A5A6,
+        )
+        for e in cerrados[:10]:
+            selec = await db.mge_get_seleccionados(int(e['id']))
+            fecha = e['created_at'][:10] if e['created_at'] else '—'
+            if selec:
+                top3 = ' · '.join(
+                    f'{medallas[s["posicion"]-1] if s["posicion"] <= 3 else f"#{s[\"posicion\"]}"} {s["gobernador"]}'
+                    for s in selec[:3]
+                )
+            else:
+                top3 = '_Sin participantes_'
+            embed.add_field(
+                name=f'`#{e["id"]}` {e["nombre"]} · 📅 {fecha}',
+                value=f'🎯 Meta: {fmt_poder(e["poder_min"])} · 👥 {len(selec)} participantes\n{top3}',
+                inline=False,
+            )
+        embed.set_footer(text=f'Mostrando los últimos {min(len(cerrados), 10)} MGEs · {ALIANZA_TAG}')
+        await interaction.response.send_message(embed=embed)
+
     # ── Errores ────────────────────────────────────────────────────────────────
 
     @mge_crear.error

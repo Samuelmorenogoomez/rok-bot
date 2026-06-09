@@ -566,6 +566,32 @@ async def mge_get_eventos_activos(guild_id: str) -> list:
         return await cursor.fetchall()
 
 
+async def mge_get_eventos_cerrados(guild_id: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            'SELECT * FROM mge_eventos WHERE guild_id=? AND activo=0 ORDER BY created_at DESC',
+            (guild_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def mge_get_historial_usuario(guild_id: str, user_id: str) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            '''
+            SELECT e.nombre, e.poder_min, e.created_at, s.posicion, s.poder as meta_individual
+            FROM mge_seleccionados s
+            JOIN mge_eventos e ON s.evento_id = e.id
+            WHERE s.guild_id=? AND s.user_id=?
+            ORDER BY e.created_at DESC
+            ''',
+            (guild_id, user_id)
+        )
+        return await cursor.fetchall()
+
+
 async def mge_get_evento(evento_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
