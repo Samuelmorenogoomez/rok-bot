@@ -276,13 +276,14 @@ class Admin(commands.Cog):
     async def sync_comandos(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        # Limpiar comandos globales y sincronizar solo al servidor
-        self.bot.tree.clear_commands(guild=None)
-        await self.bot.tree.sync()
+        # 1. Primero copiar todos los comandos al servidor y sincronizar
         self.bot.tree.copy_global_to(guild=guild)
         synced = await self.bot.tree.sync(guild=guild)
+        # 2. Luego borrar comandos globales de Discord (evita duplicados)
+        self.bot.tree.clear_commands(guild=None)
+        await self.bot.tree.sync()
         await interaction.followup.send(
-            f'✅ {len(synced)} comandos sincronizados. Haz **Ctrl+R** en Discord para verlos actualizados.',
+            f'✅ {len(synced)} comandos sincronizados al servidor. Comandos globales eliminados.\nHaz **Ctrl+R** en Discord para verlos actualizados.',
             ephemeral=True,
         )
 
