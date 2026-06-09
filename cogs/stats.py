@@ -26,11 +26,15 @@ class Stats(commands.Cog):
     @tasks.loop(minutes=5)
     async def actualizar_stats(self):
         for guild in self.bot.guilds:
-            await self._update(guild)
+            try:
+                await self._update(guild)
+            except Exception as e:
+                print(f'[stats] Error actualizando {guild.name}: {type(e).__name__}: {e}')
 
     @actualizar_stats.before_loop
     async def before_stats(self):
         await self.bot.wait_until_ready()
+        print('[stats] Tarea de estadísticas iniciada')
 
     async def _update(self, guild: discord.Guild):
         # Leer IDs de canales configurados
