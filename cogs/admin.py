@@ -18,9 +18,9 @@ TROPAS_EMOJI = {
 
 def fmt_poder(n: int) -> str:
     if n >= 1_000_000:
-        return f'{n / 1_000_000:.1f}M'
+        return f'{n / 1_000_000:.3f}'.rstrip('0').rstrip('.') + 'M'
     if n >= 1_000:
-        return f'{n / 1_000:.0f}K'
+        return f'{n / 1_000:.3f}'.rstrip('0').rstrip('.') + 'K'
     return str(n)
 
 

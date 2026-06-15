@@ -9,9 +9,9 @@ from db import database as db
 
 def fmt_poder(n: int) -> str:
     if n >= 1_000_000_000:
-        return f'{n / 1_000_000_000:.1f}B'
+        return f'{n / 1_000_000_000:.3f}'.rstrip('0').rstrip('.') + 'B'
     if n >= 1_000_000:
-        return f'{n / 1_000_000:.1f}M'
+        return f'{n / 1_000_000:.3f}'.rstrip('0').rstrip('.') + 'M'
     return str(n)
 
 
