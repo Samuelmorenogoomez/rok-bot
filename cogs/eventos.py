@@ -4,10 +4,18 @@ from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from config import COLOR_BOT
+from config import COLOR_BOT, ALIANZA_TAG, REINO
 from db import database as db
 
 ZONA = ZoneInfo('Europe/Madrid')
+
+
+def fmt_poder(n: int) -> str:
+    if n >= 1_000_000:
+        return f'{n / 1_000_000:.3f}'.rstrip('0').rstrip('.') + 'M'
+    if n >= 1_000:
+        return f'{n / 1_000:.3f}'.rstrip('0').rstrip('.') + 'K'
+    return str(n)
 
 DIAS_NOMBRE = {
     0: 'Lunes', 1: 'Martes', 2: 'Miércoles',
@@ -29,12 +37,38 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
     events = await db.get_guild_events(guild_id)
 
     embed = discord.Embed(
-        title='📅  Eventos de la semana',
+        title='📅  Calendario de la Alianza',
+        description=f'*{ALIANZA_TAG} · Reino {REINO}*',
         color=0x5865F2,
         timestamp=datetime.now(),
     )
 
-    tiene_algo = False
+    # ── KvK activo ────────────────────────────────────────────────────────────
+    temporada = await db.kvk_get_active(guild_id)
+    if temporada:
+        tipo   = '🔄 Recuperación' if temporada['recuperacion'] else '⚔️ Principal'
+        guerra = '🟢 ACTIVA' if temporada['guerra_activa'] else '🔴 inactiva'
+        valor  = f'{tipo} · Guerra: {guerra}'
+        if temporada['historia']:
+            valor += f'\n📖 {temporada["historia"]}'
+        if temporada['fecha_inicio'] or temporada['fecha_fin']:
+            valor += f'\n📅 {temporada["fecha_inicio"] or "?"} → {temporada["fecha_fin"] or "?"}'
+        embed.add_field(name=f'⚔️ KvK: {temporada["nombre"]}', value=valor, inline=False)
+
+    # ── MGEs activos ──────────────────────────────────────────────────────────
+    mges = await db.mge_get_eventos_activos(guild_id)
+    if mges:
+        lineas_mge = []
+        for m in mges:
+            inscritos = await db.mge_count_inscritos(int(m['id']))
+            selec     = await db.mge_get_seleccionados(int(m['id']))
+            lineas_mge.append(
+                f'**{m["nombre"]}** — 🎯 {fmt_poder(m["poder_min"])} · '
+                f'👥 {inscritos} inscritos · 🏆 {len(selec)}/{m["max_plazas"]} plazas'
+            )
+        embed.add_field(name='📝 MGEs activos', value='\n'.join(lineas_mge), inline=False)
+
+    tiene_algo = bool(temporada or mges)
     for offset in range(7):
         dia_dt    = now + timedelta(days=offset)
         dia_idx   = str(dia_dt.weekday())
@@ -60,7 +94,7 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
             )
 
     if not tiene_algo:
-        embed.description = '_No hay eventos programados esta semana.\nUsa `/evento-crear` para añadir._'
+        embed.description += '\n\n_No hay eventos, KvK ni MGE activos esta semana._'
 
     embed.set_footer(text=f'Actualizado · {now.strftime("%H:%M")} · Hora de España')
     return embed
