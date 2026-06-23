@@ -52,7 +52,30 @@ async def init_db():
                 historia      TEXT DEFAULT '',
                 fecha_inicio  TEXT DEFAULT '',
                 fecha_fin     TEXT DEFAULT '',
-                recuperacion  INTEGER DEFAULT 0
+                recuperacion  INTEGER DEFAULT 0,
+                guerra_activa INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS kvk_baseline_guerra (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                temporada_id  INTEGER NOT NULL,
+                governor_id   TEXT NOT NULL,
+                governor_name TEXT NOT NULL,
+                kills_t4      INTEGER DEFAULT 0,
+                kills_t5      INTEGER DEFAULT 0,
+                muertes       INTEGER DEFAULT 0,
+                UNIQUE (temporada_id, governor_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS kvk_bajas_acumuladas (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                temporada_id  INTEGER NOT NULL,
+                governor_id   TEXT NOT NULL,
+                governor_name TEXT NOT NULL,
+                kills_t4      INTEGER DEFAULT 0,
+                kills_t5      INTEGER DEFAULT 0,
+                muertes       INTEGER DEFAULT 0,
+                UNIQUE (temporada_id, governor_id)
             );
 
             CREATE TABLE IF NOT EXISTS kvk_stats (
@@ -561,6 +584,88 @@ async def kvk_get_import_ranking(temporada_id: int) -> list:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute('''
             SELECT * FROM kvk_import
+            WHERE temporada_id=?
+            ORDER BY (kills_t4 + kills_t5) DESC
+        ''', (temporada_id,))
+        return await cursor.fetchall()
+
+
+async def kvk_set_guerra(temporada_id: int, activa: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'UPDATE kvk_temporadas SET guerra_activa=? WHERE id=?',
+            (int(activa), temporada_id)
+        )
+        await db.commit()
+
+
+async def kvk_guerra_activar(temporada_id: int) -> int:
+    """Guarda una foto de las stats actuales (kvk_import) como línea base de guerra."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('DELETE FROM kvk_baseline_guerra WHERE temporada_id=?', (temporada_id,))
+        cursor = await db.execute(
+            'SELECT governor_id, governor_name, kills_t4, kills_t5, muertes FROM kvk_import WHERE temporada_id=?',
+            (temporada_id,)
+        )
+        rows = await cursor.fetchall()
+        await db.executemany(
+            'INSERT INTO kvk_baseline_guerra (temporada_id, governor_id, governor_name, kills_t4, kills_t5, muertes) VALUES (?,?,?,?,?,?)',
+            [(temporada_id, r[0], r[1], r[2], r[3], r[4]) for r in rows]
+        )
+        await db.execute('UPDATE kvk_temporadas SET guerra_activa=1 WHERE id=?', (temporada_id,))
+        await db.commit()
+        return len(rows)
+
+
+async def kvk_guerra_desactivar(temporada_id: int) -> list:
+    """Calcula la diferencia entre las stats actuales y la línea base, y la acumula como bajas de guerra."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute('SELECT * FROM kvk_import WHERE temporada_id=?', (temporada_id,))
+        actuales = await cursor.fetchall()
+
+        cursor = await db.execute('SELECT * FROM kvk_baseline_guerra WHERE temporada_id=?', (temporada_id,))
+        baseline_rows = await cursor.fetchall()
+        baseline = {b['governor_id']: b for b in baseline_rows}
+
+        deltas = []
+        for a in actuales:
+            base = baseline.get(a['governor_id'])
+            base_t4 = base['kills_t4'] if base else 0
+            base_t5 = base['kills_t5'] if base else 0
+            base_mt = base['muertes']  if base else 0
+
+            d_t4 = max(0, a['kills_t4'] - base_t4)
+            d_t5 = max(0, a['kills_t5'] - base_t5)
+            d_mt = max(0, a['muertes']  - base_mt)
+
+            if d_t4 or d_t5 or d_mt:
+                deltas.append((temporada_id, a['governor_id'], a['governor_name'], d_t4, d_t5, d_mt))
+
+        if deltas:
+            await db.executemany('''
+                INSERT INTO kvk_bajas_acumuladas (temporada_id, governor_id, governor_name, kills_t4, kills_t5, muertes)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(temporada_id, governor_id) DO UPDATE SET
+                    governor_name = excluded.governor_name,
+                    kills_t4      = kills_t4 + excluded.kills_t4,
+                    kills_t5      = kills_t5 + excluded.kills_t5,
+                    muertes       = muertes + excluded.muertes
+            ''', deltas)
+
+        await db.execute('DELETE FROM kvk_baseline_guerra WHERE temporada_id=?', (temporada_id,))
+        await db.execute('UPDATE kvk_temporadas SET guerra_activa=0 WHERE id=?', (temporada_id,))
+        await db.commit()
+
+        return [{'governor_name': d[2], 'kills_t4': d[3], 'kills_t5': d[4], 'muertes': d[5]} for d in deltas]
+
+
+async def kvk_get_bajas_acumuladas(temporada_id: int) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute('''
+            SELECT * FROM kvk_bajas_acumuladas
             WHERE temporada_id=?
             ORDER BY (kills_t4 + kills_t5) DESC
         ''', (temporada_id,))
