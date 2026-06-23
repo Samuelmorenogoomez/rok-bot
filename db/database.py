@@ -206,9 +206,14 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
-        # Migración: añadir historia/fechas/recuperacion a kvk_temporadas si no existen
-        for columna in ('historia TEXT DEFAULT \'\'', 'fecha_inicio TEXT DEFAULT \'\'',
-                       'fecha_fin TEXT DEFAULT \'\'', 'recuperacion INTEGER DEFAULT 0'):
+        # Migración: añadir columnas a kvk_temporadas si no existen
+        for columna in (
+            'historia TEXT DEFAULT \'\'',
+            'fecha_inicio TEXT DEFAULT \'\'',
+            'fecha_fin TEXT DEFAULT \'\'',
+            'recuperacion INTEGER DEFAULT 0',
+            'guerra_activa INTEGER DEFAULT 0',
+        ):
             try:
                 await db.execute(f'ALTER TABLE kvk_temporadas ADD COLUMN {columna}')
                 await db.commit()
