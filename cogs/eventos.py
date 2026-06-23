@@ -36,16 +36,17 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
 
     tiene_algo = False
     for offset in range(7):
-        dia_dt  = now + timedelta(days=offset)
-        dia_idx = str(dia_dt.weekday())
-        nombre  = DIAS_NOMBRE.get(str(dia_dt.weekday()), '')
-        emoji   = DIAS_EMOJI[dia_dt.weekday()]
-        fecha   = dia_dt.strftime('%d/%m')
-        hoy     = '  *(hoy)*' if offset == 0 else ('  *(mañana)*' if offset == 1 else '')
+        dia_dt    = now + timedelta(days=offset)
+        dia_idx   = str(dia_dt.weekday())
+        fecha_iso = dia_dt.strftime('%Y-%m-%d')
+        nombre    = DIAS_NOMBRE.get(str(dia_dt.weekday()), '')
+        emoji     = DIAS_EMOJI[dia_dt.weekday()]
+        fecha     = dia_dt.strftime('%d/%m')
+        hoy       = '  *(hoy)*' if offset == 0 else ('  *(mañana)*' if offset == 1 else '')
 
         ev_dia = [
             ev for ev in events
-            if dia_idx in ev['dias'].split(',')
+            if (ev['fecha_unica'] == fecha_iso if ev['puntual'] else dia_idx in ev['dias'].split(','))
         ]
         ev_dia.sort(key=lambda e: e['hora'])
 
@@ -86,8 +87,12 @@ class Eventos(commands.Cog):
 
         eventos = await db.get_all_active_events()
         for ev in eventos:
-            if current_day not in ev['dias'].split(','):
-                continue
+            if ev['puntual']:
+                if ev['fecha_unica'] != today:
+                    continue
+            else:
+                if current_day not in ev['dias'].split(','):
+                    continue
 
             canal = self.bot.get_channel(int(ev['canal_id']))
             if not canal:
@@ -117,6 +122,10 @@ class Eventos(commands.Cog):
                     color=0xFF0000,
                 )
                 await canal.send(content=rol_mention, embed=embed)
+
+                if ev['puntual']:
+                    await db.delete_event_by_id(ev['id'])
+                    await self._refrescar_semana(canal.guild)
 
     @check_eventos.before_loop
     async def before_check(self):
@@ -176,12 +185,13 @@ class Eventos(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name='evento-crear', description='[ADMIN] Crea un recordatorio de evento recurrente')
+    @app_commands.command(name='evento-crear', description='[ADMIN] Crea un recordatorio de evento (recurrente o puntual)')
     @app_commands.describe(
         nombre='Nombre del evento (ej: Ark of Osiris)',
         hora='Hora en formato HH:MM — hora de España',
-        dia='Día(s) de la semana',
         canal='Canal donde se enviará el aviso',
+        dia='Día(s) de la semana — para eventos que se repiten',
+        fecha='Fecha concreta dd/mm/aaaa — para un evento puntual que NO se repite nunca más',
         rol='Rol al que se mencionará (opcional, por defecto @everyone)',
         descripcion='Descripción opcional',
     )
@@ -202,8 +212,9 @@ class Eventos(commands.Cog):
         interaction: discord.Interaction,
         nombre: str,
         hora: str,
-        dia: str,
         canal: discord.TextChannel,
+        dia: str = None,
+        fecha: str = None,
         rol: discord.Role = None,
         descripcion: str = '',
     ):
@@ -213,6 +224,33 @@ class Eventos(commands.Cog):
             await interaction.response.send_message('❌ Formato de hora incorrecto. Usa HH:MM (ej: 20:00)', ephemeral=True)
             return
 
+        if not dia and not fecha:
+            await interaction.response.send_message(
+                '❌ Indica `dia` para un evento recurrente o `fecha` para uno puntual.', ephemeral=True
+            )
+            return
+        if dia and fecha:
+            await interaction.response.send_message(
+                '❌ Indica solo uno: `dia` (recurrente) o `fecha` (puntual), no ambos.', ephemeral=True
+            )
+            return
+
+        if fecha:
+            try:
+                fecha_dt = datetime.strptime(fecha, '%d/%m/%Y')
+            except ValueError:
+                await interaction.response.send_message(
+                    '❌ Formato de fecha incorrecto. Usa dd/mm/aaaa (ej: 15/07/2026)', ephemeral=True
+                )
+                return
+            dias_db       = str(fecha_dt.weekday())
+            fecha_unica_db = fecha_dt.strftime('%Y-%m-%d')
+            es_puntual    = True
+        else:
+            dias_db        = dia
+            fecha_unica_db = ''
+            es_puntual     = False
+
         await db.create_event(
             guild_id=str(interaction.guild_id),
             canal_id=str(canal.id),
@@ -220,13 +258,18 @@ class Eventos(commands.Cog):
             nombre=nombre,
             descripcion=descripcion,
             hora=hora,
-            dias=dia,
+            dias=dias_db,
+            puntual=es_puntual,
+            fecha_unica=fecha_unica_db,
         )
 
         embed = discord.Embed(title='✅ Evento creado', color=COLOR_BOT)
         embed.add_field(name='Nombre', value=nombre, inline=True)
         embed.add_field(name='Hora',   value=f'{hora} (España)', inline=True)
-        embed.add_field(name='Días',   value=NOMBRES_DIAS.get(dia, dia), inline=True)
+        if es_puntual:
+            embed.add_field(name='📌 Tipo', value=f'Puntual — {fecha_dt.strftime("%d/%m/%Y")}\n_No se repetirá_', inline=True)
+        else:
+            embed.add_field(name='🔁 Días', value=NOMBRES_DIAS.get(dia, dia), inline=True)
         embed.add_field(name='Canal',  value=canal.mention, inline=True)
         if rol:
             embed.add_field(name='Ping', value=rol.mention, inline=True)
@@ -246,9 +289,17 @@ class Eventos(commands.Cog):
         embed = discord.Embed(title='📅 Eventos programados', color=COLOR_BOT)
         for ev in eventos:
             canal = self.bot.get_channel(int(ev['canal_id']))
+            if ev['puntual']:
+                try:
+                    fecha_str = datetime.strptime(ev['fecha_unica'], '%Y-%m-%d').strftime('%d/%m/%Y')
+                except ValueError:
+                    fecha_str = ev['fecha_unica']
+                cuando = f'📌 Puntual · {fecha_str}'
+            else:
+                cuando = f'🔁 {NOMBRES_DIAS.get(ev["dias"], ev["dias"])}'
             embed.add_field(
                 name=f'`#{ev["id"]}` {ev["nombre"]}',
-                value=f'🕐 **{ev["hora"]}** · {NOMBRES_DIAS.get(ev["dias"], ev["dias"])} · {canal.mention if canal else "canal eliminado"}',
+                value=f'🕐 **{ev["hora"]}** · {cuando} · {canal.mention if canal else "canal eliminado"}',
                 inline=False,
             )
         await interaction.response.send_message(embed=embed)

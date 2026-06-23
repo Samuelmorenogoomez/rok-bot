@@ -39,7 +39,9 @@ async def init_db():
                 dias                  TEXT NOT NULL,
                 dia_ultimo_aviso      TEXT DEFAULT '',
                 dia_ultima_ejecucion  TEXT DEFAULT '',
-                activo                INTEGER DEFAULT 1
+                activo                INTEGER DEFAULT 1,
+                puntual               INTEGER DEFAULT 0,
+                fecha_unica           TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS kvk_temporadas (
@@ -212,6 +214,13 @@ async def init_db():
                 await db.commit()
             except Exception:
                 pass
+        # Migración: añadir puntual/fecha_unica a eventos si no existen
+        for columna in ('puntual INTEGER DEFAULT 0', 'fecha_unica TEXT DEFAULT \'\''):
+            try:
+                await db.execute(f'ALTER TABLE eventos ADD COLUMN {columna}')
+                await db.commit()
+            except Exception:
+                pass
 
 
 # ─── Cola de títulos ───────────────────────────────────────────────────────────
@@ -330,12 +339,13 @@ async def get_miembros_externos(guild_id: str) -> list:
 # ─── Eventos ──────────────────────────────────────────────────────────────────
 
 async def create_event(guild_id: str, canal_id: str, rol_ping: str, nombre: str,
-                       descripcion: str, hora: str, dias: str) -> int:
+                       descripcion: str, hora: str, dias: str,
+                       puntual: bool = False, fecha_unica: str = '') -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('''
-            INSERT INTO eventos (guild_id, canal_id, rol_ping, nombre, descripcion, hora, dias)
-            VALUES (?,?,?,?,?,?,?)
-        ''', (guild_id, canal_id, rol_ping, nombre, descripcion, hora, dias))
+            INSERT INTO eventos (guild_id, canal_id, rol_ping, nombre, descripcion, hora, dias, puntual, fecha_unica)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        ''', (guild_id, canal_id, rol_ping, nombre, descripcion, hora, dias, int(puntual), fecha_unica))
         await db.commit()
         return cursor.lastrowid
 
@@ -365,6 +375,12 @@ async def delete_event(guild_id: str, event_id: int) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def delete_event_by_id(event_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('DELETE FROM eventos WHERE id=?', (event_id,))
+        await db.commit()
 
 
 async def update_event_aviso(event_id: int, fecha: str):
