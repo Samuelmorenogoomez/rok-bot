@@ -146,24 +146,88 @@ class Kvk(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name='kvk-inicio', description='[ADMIN] Inicia una nueva temporada KvK')
-    @app_commands.describe(nombre='Nombre de la temporada (ej: KvK Mayo 2026)')
+    @app_commands.command(name='kvk-inicio', description='[ADMIN] Inicia una nueva temporada KvK y publica el anuncio')
+    @app_commands.describe(
+        nombre='Nombre de la temporada (ej: KvK Mayo 2026)',
+        historia='Historia/temática elegida para este KvK',
+        fecha_inicio='Fecha de inicio (dd/mm/aaaa)',
+        fecha_fin='Fecha de fin (dd/mm/aaaa)',
+        recuperacion='¿Es un KvK de recuperación?',
+    )
+    @app_commands.choices(recuperacion=[
+        app_commands.Choice(name='✅ Sí, es de recuperación', value='si'),
+        app_commands.Choice(name='❌ No, KvK normal', value='no'),
+    ])
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def kvk_inicio(self, interaction: discord.Interaction, nombre: str):
+    async def kvk_inicio(self, interaction: discord.Interaction, nombre: str, historia: str,
+                         fecha_inicio: str, fecha_fin: str, recuperacion: str):
+        try:
+            d_inicio = datetime.strptime(fecha_inicio, '%d/%m/%Y')
+            d_fin    = datetime.strptime(fecha_fin, '%d/%m/%Y')
+        except ValueError:
+            await interaction.response.send_message(
+                '❌ Formato de fecha incorrecto. Usa `dd/mm/aaaa` (ej: 15/07/2026).',
+                ephemeral=True,
+            )
+            return
+
+        es_recuperacion = recuperacion == 'si'
+
         # Cerrar temporada anterior si existe (sin borrar sus datos históricos)
         await db.kvk_end_active(str(interaction.guild_id))
-        temporada_id = await db.kvk_create(str(interaction.guild_id), nombre)
+        temporada_id = await db.kvk_create(
+            str(interaction.guild_id), nombre, historia, fecha_inicio, fecha_fin, es_recuperacion
+        )
+
+        tipo_kvk = '🔄 KvK de Recuperación' if es_recuperacion else '⚔️ KvK Principal'
+
         embed = discord.Embed(
-            title='⚔️ Nuevo KvK iniciado',
-            description=f'**{nombre}** — ID `{temporada_id}`',
+            title=f'⚔️ ¡Nuevo KvK! — {nombre}',
+            description=(
+                f'**{ALIANZA_FULL} · Reino {REINO}**\n\n'
+                f'¡Ha comenzado la preparación para un nuevo Kingdom vs Kingdom!'
+            ),
             color=0xFF4444,
         )
+        embed.add_field(name='📖 Historia', value=historia, inline=False)
+        embed.add_field(name='🗂️ Tipo', value=tipo_kvk, inline=True)
+        embed.add_field(name='📅 Inicio', value=d_inicio.strftime('%d/%m/%Y'), inline=True)
+        embed.add_field(name='🏁 Fin', value=d_fin.strftime('%d/%m/%Y'), inline=True)
         embed.add_field(
-            name='Próximo paso',
-            value='Exporta el Excel de [heroscroll.com](https://heroscroll.com/rok/kvk-dashboard) al final del KvK y usa `/kvk-importar`',
+            name='💪 Preparación',
+            value=(
+                'Revisad vuestras tropas, equipamiento y comandantes.\n'
+                'Estad atentos a **🎙️│kvk-coordinacion** y **🚩│coordinacion** para las órdenes del liderazgo.'
+            ),
             inline=False,
         )
-        await interaction.response.send_message(embed=embed)
+        embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO} · ID temporada #{temporada_id}')
+
+        # Publicar en #anuncios y #kvk-anuncios
+        canal_anuncios = next(
+            (c for c in interaction.guild.text_channels
+             if 'anuncios' in c.name and 'kvk' not in c.name and 'ark' not in c.name),
+            None,
+        )
+        canal_kvk_anuncios = next(
+            (c for c in interaction.guild.text_channels if 'kvk-anuncios' in c.name), None
+        )
+
+        publicados = []
+        for canal in {canal_anuncios, canal_kvk_anuncios} - {None}:
+            try:
+                await canal.send(embed=embed)
+                publicados.append(canal.mention)
+            except discord.Forbidden:
+                pass
+
+        resumen = f'✅ **{nombre}** iniciado — ID `{temporada_id}`.'
+        if publicados:
+            resumen += f'\nAnuncio publicado en {", ".join(publicados)}.'
+        else:
+            resumen += '\n⚠️ No encontré los canales de anuncios para publicarlo automáticamente.'
+
+        await interaction.response.send_message(resumen, ephemeral=True)
 
     @app_commands.command(name='kvk-fin', description='[ADMIN] Cierra la temporada KvK activa y publica el resumen')
     @app_commands.checks.has_permissions(manage_guild=True)

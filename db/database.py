@@ -43,12 +43,16 @@ async def init_db():
             );
 
             CREATE TABLE IF NOT EXISTS kvk_temporadas (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id TEXT NOT NULL,
-                nombre   TEXT NOT NULL,
-                activa   INTEGER DEFAULT 1,
-                inicio   DATETIME DEFAULT CURRENT_TIMESTAMP,
-                fin      DATETIME
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id      TEXT NOT NULL,
+                nombre        TEXT NOT NULL,
+                activa        INTEGER DEFAULT 1,
+                inicio        DATETIME DEFAULT CURRENT_TIMESTAMP,
+                fin           DATETIME,
+                historia      TEXT DEFAULT '',
+                fecha_inicio  TEXT DEFAULT '',
+                fecha_fin     TEXT DEFAULT '',
+                recuperacion  INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS kvk_stats (
@@ -177,6 +181,14 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
+        # Migración: añadir historia/fechas/recuperacion a kvk_temporadas si no existen
+        for columna in ('historia TEXT DEFAULT \'\'', 'fecha_inicio TEXT DEFAULT \'\'',
+                       'fecha_fin TEXT DEFAULT \'\'', 'recuperacion INTEGER DEFAULT 0'):
+            try:
+                await db.execute(f'ALTER TABLE kvk_temporadas ADD COLUMN {columna}')
+                await db.commit()
+            except Exception:
+                pass
 
 
 # ─── Cola de títulos ───────────────────────────────────────────────────────────
@@ -346,11 +358,12 @@ async def update_event_ejecucion(event_id: int, fecha: str):
 
 # ─── KvK ──────────────────────────────────────────────────────────────────────
 
-async def kvk_create(guild_id: str, nombre: str) -> int:
+async def kvk_create(guild_id: str, nombre: str, historia: str = '',
+                     fecha_inicio: str = '', fecha_fin: str = '', recuperacion: bool = False) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            'INSERT INTO kvk_temporadas (guild_id, nombre) VALUES (?,?)',
-            (guild_id, nombre)
+            'INSERT INTO kvk_temporadas (guild_id, nombre, historia, fecha_inicio, fecha_fin, recuperacion) VALUES (?,?,?,?,?,?)',
+            (guild_id, nombre, historia, fecha_inicio, fecha_fin, int(recuperacion))
         )
         await db.commit()
         return cursor.lastrowid
