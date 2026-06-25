@@ -170,7 +170,10 @@ class Eventos(commands.Cog):
     @tasks.loop(hours=1)
     async def actualizar_semana(self):
         for guild in self.bot.guilds:
-            await self._refrescar_semana(guild)
+            try:
+                await self._refrescar_semana(guild)
+            except Exception as e:
+                print(f'[eventos] Error actualizando calendario en {guild.name}: {type(e).__name__}: {e}')
 
     @actualizar_semana.before_loop
     async def before_semana(self):
