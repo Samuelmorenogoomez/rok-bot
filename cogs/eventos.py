@@ -37,7 +37,7 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
     events = await db.get_guild_events(guild_id)
 
     embed = discord.Embed(
-        title='📅  Calendario de la Alianza',
+        title='📅  Calendario de la Alianza · Alliance Calendar',
         description=f'*{ALIANZA_TAG} · Reino {REINO}*',
         color=0x5865F2,
         timestamp=datetime.now(),
@@ -46,9 +46,9 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
     # ── KvK activo ────────────────────────────────────────────────────────────
     temporada = await db.kvk_get_active(guild_id)
     if temporada:
-        tipo   = '🔄 Recuperación' if temporada['recuperacion'] else '⚔️ Principal'
-        guerra = '🟢 ACTIVA' if temporada['guerra_activa'] else '🔴 inactiva'
-        valor  = f'{tipo} · Guerra: {guerra}'
+        tipo   = '🔄 Recuperación / Recovery' if temporada['recuperacion'] else '⚔️ Principal / Main'
+        guerra = '🟢 ACTIVA / ACTIVE' if temporada['guerra_activa'] else '🔴 inactiva / inactive'
+        valor  = f'{tipo} · War: {guerra}'
         if temporada['historia']:
             valor += f'\n📖 {temporada["historia"]}'
         if temporada['fecha_inicio'] or temporada['fecha_fin']:
@@ -64,19 +64,24 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
             selec     = await db.mge_get_seleccionados(int(m['id']))
             lineas_mge.append(
                 f'**{m["nombre"]}** — 🎯 {fmt_poder(m["poder_min"])} · '
-                f'👥 {inscritos} inscritos · 🏆 {len(selec)}/{m["max_plazas"]} plazas'
+                f'👥 {inscritos} inscritos / enrolled · 🏆 {len(selec)}/{m["max_plazas"]} plazas / slots'
             )
-        embed.add_field(name='📝 MGEs activos', value='\n'.join(lineas_mge), inline=False)
+        embed.add_field(name='📝 MGEs activos / Active MGEs', value='\n'.join(lineas_mge), inline=False)
 
+    DIAS_NOMBRE_EN = {
+        0: 'Monday', 1: 'Tuesday', 2: 'Wednesday',
+        3: 'Thursday', 4: 'Friday', 5: 'Saturday', 6: 'Sunday',
+    }
     tiene_algo = bool(temporada or mges)
     for offset in range(7):
         dia_dt    = now + timedelta(days=offset)
         dia_idx   = str(dia_dt.weekday())
         fecha_iso = dia_dt.strftime('%Y-%m-%d')
-        nombre    = DIAS_NOMBRE.get(str(dia_dt.weekday()), '')
+        nombre_es = DIAS_NOMBRE.get(str(dia_dt.weekday()), '')
+        nombre_en = DIAS_NOMBRE_EN.get(dia_dt.weekday(), '')
         emoji     = DIAS_EMOJI[dia_dt.weekday()]
         fecha     = dia_dt.strftime('%d/%m')
-        hoy       = '  *(hoy)*' if offset == 0 else ('  *(mañana)*' if offset == 1 else '')
+        hoy       = '  *(hoy / today)*' if offset == 0 else ('  *(mañana / tomorrow)*' if offset == 1 else '')
 
         ev_dia = [
             ev for ev in events
@@ -88,15 +93,15 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
             tiene_algo = True
             lineas = [f'🕐 **{ev["hora"]}** — {ev["nombre"]}' for ev in ev_dia]
             embed.add_field(
-                name=f'{emoji} {nombre} {fecha}{hoy}',
+                name=f'{emoji} {nombre_es} / {nombre_en} {fecha}{hoy}',
                 value='\n'.join(lineas),
                 inline=False,
             )
 
     if not tiene_algo:
-        embed.description += '\n\n_No hay eventos, KvK ni MGE activos esta semana._'
+        embed.description += '\n\n_No hay eventos, KvK ni MGE activos esta semana. / No active events, KvK or MGE this week._'
 
-    embed.set_footer(text=f'Actualizado · {now.strftime("%H:%M")} · Hora de España')
+    embed.set_footer(text=f'Actualizado / Updated · {now.strftime("%H:%M")} · Spain Time')
     return embed
 
 
@@ -141,17 +146,17 @@ class Eventos(commands.Cog):
             if current_time == aviso_time and ev['dia_ultimo_aviso'] != today:
                 await db.update_event_aviso(ev['id'], today)
                 embed = discord.Embed(
-                    title=f'⏰ {ev["nombre"]} — en 30 minutos',
+                    title=f'⏰ {ev["nombre"]} — en 30 minutos / in 30 minutes',
                     description=ev['descripcion'] or '',
                     color=COLOR_BOT,
                 )
-                embed.add_field(name='Hora', value=f'{ev["hora"]} (España)')
+                embed.add_field(name='Hora / Time', value=f'{ev["hora"]} (Spain)')
                 await canal.send(content=rol_mention, embed=embed)
 
             elif current_time == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
                 await db.update_event_ejecucion(ev['id'], today)
                 embed = discord.Embed(
-                    title=f'🚨 {ev["nombre"]} — ¡AHORA!',
+                    title=f'🚨 {ev["nombre"]} — ¡AHORA! / NOW!',
                     description=ev['descripcion'] or '',
                     color=0xFF0000,
                 )
