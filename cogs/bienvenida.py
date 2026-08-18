@@ -58,25 +58,31 @@ class Bienvenida(commands.Cog):
         msg_personalizado = await db.get_config(str(member.guild.id), 'bienvenida_msg')
 
         embed = discord.Embed(
-            title=f'🔥 ¡Bienvenido a {ALIANZA_NOMBRE}!',
+            title=f'🔥 ¡Bienvenido a {ALIANZA_NOMBRE}! / Welcome to {ALIANZA_NOMBRE}!',
             description=msg_personalizado or (
                 f'Hola {member.mention}, ¡bienvenido al servidor oficial de '
-                f'**{ALIANZA_FULL}** del **Reino {REINO}**!\n\n'
-                f'Para acceder al servidor completo, regístrate con tu perfil de gobernador.'
+                f'**{ALIANZA_FULL}** del **Reino {REINO}**!\n'
+                f'_Hi {member.mention}, welcome to the official server of '
+                f'**{ALIANZA_FULL}**, **Kingdom {REINO}**!_\n\n'
+                f'Para acceder al servidor completo, regístrate con tu perfil de gobernador.\n'
+                f'_To access the full server, register your governor profile._'
             ),
             color=COLOR_BOT,
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
-            name='📋 Primeros pasos',
+            name='📋 Primeros pasos / First steps',
             value=(
                 '**1.** Ve al canal de miembros y usa `/registrar`\n'
+                '_Go to the members channel and use `/registrar`_\n'
                 '**2.** Consulta `/comandante` para ver builds y equipamiento\n'
-                '**3.** Usa `/pedir` para solicitar títulos de reino'
+                '_Use `/comandante` to check builds and equipment_\n'
+                '**3.** Usa `/pedir` para solicitar títulos de reino\n'
+                '_Use `/pedir` to request kingdom titles_'
             ),
             inline=False,
         )
-        embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO} · Miembro #{member.guild.member_count}')
+        embed.set_footer(text=f'{ALIANZA_TAG} · Reino / Kingdom {REINO} · Miembro / Member #{member.guild.member_count}')
 
         await canal.send(content=member.mention, embed=embed)
 
