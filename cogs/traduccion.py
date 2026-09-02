@@ -1,8 +1,8 @@
-import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
-from deep_translator import GoogleTranslator
+import aiohttp
+import urllib.parse
 
 from config import COLOR_BOT
 
@@ -38,10 +38,20 @@ NOMBRES_IDIOMA = {
 
 
 async def _traducir_async(texto: str, idioma_destino: str) -> str:
-    """Ejecuta la traducción de Google en un thread para no bloquear el loop."""
-    def _sync():
-        return GoogleTranslator(source='auto', target=idioma_destino).translate(texto)
-    return await asyncio.to_thread(_sync)
+    """Traduce usando la API pública gratuita de Google Translate (sin API key)."""
+    url = 'https://translate.googleapis.com/translate_a/single'
+    params = {
+        'client': 'gtx',
+        'sl': 'auto',
+        'tl': idioma_destino,
+        'dt': 't',
+        'q': texto,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as resp:
+            data = await resp.json(content_type=None)
+            # La respuesta es una lista anidada; concatenar los fragmentos traducidos
+            return ''.join(part[0] for part in data[0] if part[0])
 
 
 class Traduccion(commands.Cog):
