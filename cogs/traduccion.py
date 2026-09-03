@@ -101,9 +101,22 @@ class Traduccion(commands.Cog):
             name=f'{idioma_nombre} · {mensaje.author.display_name}',
             icon_url=mensaje.author.display_avatar.url,
         )
-        embed.set_footer(text='Reacciona con una bandera para traducir · React with a flag to translate')
+        canal_origen = canal.mention if hasattr(canal, 'mention') else f'#{getattr(canal, "name", "?")}'
+        embed.set_footer(text=f'Traducción privada de {canal_origen} · Private translation')
 
-        await canal.send(embed=embed, reference=mensaje, mention_author=False)
+        # Enviar por DM al usuario que reaccionó (solo él lo ve)
+        usuario = payload.member or self.bot.get_user(payload.user_id)
+        if not usuario:
+            try:
+                usuario = await self.bot.fetch_user(payload.user_id)
+            except Exception:
+                return
+        try:
+            await usuario.send(embed=embed)
+        except discord.Forbidden:
+            # El usuario tiene los DMs cerrados — avisar solo a él en el canal con mensaje efímero
+            # no es posible desde eventos, así que simplemente ignoramos
+            pass
 
     # ── /traducir ──────────────────────────────────────────────────────────────
 
