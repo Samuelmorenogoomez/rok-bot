@@ -10,6 +10,11 @@ from db import database as db
 
 ZONA = ZoneInfo('Europe/Madrid')
 
+NOMBRES_TIPO_CANAL = {
+    'kvk': '⚔️ KvK', 'encuestas': '📊 Encuestas', 'miembros': '👥 Miembros',
+    'mge-inscripciones': '📝 MGE',
+}
+
 TROPAS_EMOJI = {
     'infanteria': '🗡️', 'caballeria': '🐴',
     'arqueros': '🏹', 'maquinaria': '⚙️', 'mixto': '🔀',
@@ -32,20 +37,6 @@ async def build_panel_embed(guild: discord.Guild) -> discord.Embed:
         color=COLOR_BOT,
         timestamp=datetime.now(timezone.utc),
     )
-
-    # ── Cola de títulos ───────────────────────────────────────────────────────
-    cola = await db.get_queue(str(guild.id))
-    if cola:
-        lineas = []
-        for i, r in enumerate(cola[:5], 1):
-            from config import TITULOS
-            t = TITULOS.get(r['titulo'], {})
-            lineas.append(f'**{i}.** <@{r["user_id"]}> → {t.get("emoji","❓")} {t.get("nombre", r["titulo"])}')
-        if len(cola) > 5:
-            lineas.append(f'_...y {len(cola) - 5} más_')
-        embed.add_field(name=f'🏰 Cola de títulos ({len(cola)})', value='\n'.join(lineas), inline=False)
-    else:
-        embed.add_field(name='🏰 Cola de títulos', value='_Vacía_', inline=False)
 
     # ── KvK activo ────────────────────────────────────────────────────────────
     temporada = await db.kvk_get_active(str(guild.id))
@@ -258,25 +249,17 @@ class Admin(commands.Cog):
         canal='Canal donde funcionarán esos comandos',
     )
     @app_commands.choices(tipo=[
-        app_commands.Choice(name='🏰 Cola de títulos  (/pedir, /cola...)',        value='titulos'),
         app_commands.Choice(name='⚔️ KvK  (/kvk-matar, /kvk-ranking...)',        value='kvk'),
         app_commands.Choice(name='📊 Encuestas  (/encuesta, /fecha, /si-no)',     value='encuestas'),
         app_commands.Choice(name='👥 Miembros  (/perfil, /miembros)', value='miembros'),
-        app_commands.Choice(name='🔍 Comandantes  (/comandante, /equipo...)',     value='comandantes'),
-        app_commands.Choice(name='📝 MGE Inscripciones  (tablones con botones)', value='mge-inscripciones'),
-        app_commands.Choice(name='🏆 MGE Resultados  (lista final publicada)',           value='mge-resultados'),
+        app_commands.Choice(name='📝 MGE  (tablones y lista final)',            value='mge-inscripciones'),
     ])
     @app_commands.checks.has_permissions(manage_guild=True)
     async def config_canal(self, interaction: discord.Interaction, tipo: str, canal: discord.TextChannel):
         await db.set_canal_config(str(interaction.guild_id), tipo, str(canal.id))
 
-        NOMBRES = {
-            'titulos': '🏰 Cola de títulos', 'kvk': '⚔️ KvK',
-            'encuestas': '📊 Encuestas', 'miembros': '👥 Miembros',
-            'comandantes': '🔍 Comandantes',
-        }
         await interaction.response.send_message(
-            f'✅ **{NOMBRES[tipo]}** → ahora solo funciona en {canal.mention}',
+            f'✅ **{NOMBRES_TIPO_CANAL.get(tipo, tipo)}** → ahora solo funciona en {canal.mention}',
             ephemeral=True
         )
 
@@ -284,11 +267,6 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ver_canales(self, interaction: discord.Interaction):
         configs = await db.get_all_canales_config(str(interaction.guild_id))
-        NOMBRES = {
-            'titulos': '🏰 Cola de títulos', 'kvk': '⚔️ KvK',
-            'encuestas': '📊 Encuestas', 'miembros': '👥 Miembros',
-            'comandantes': '🔍 Comandantes',
-        }
         embed = discord.Embed(title='⚙️ Configuración de canales', color=COLOR_BOT)
         if not configs:
             embed.description = '_Sin restricciones configuradas. Los comandos funcionan en cualquier canal._'
@@ -296,7 +274,7 @@ class Admin(commands.Cog):
             for c in configs:
                 canal = interaction.guild.get_channel(int(c['canal_id']))
                 embed.add_field(
-                    name=NOMBRES.get(c['tipo'], c['tipo']),
+                    name=NOMBRES_TIPO_CANAL.get(c['tipo'], c['tipo']),
                     value=canal.mention if canal else '⚠️ Canal eliminado',
                     inline=True,
                 )

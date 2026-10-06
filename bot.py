@@ -16,11 +16,9 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 COGS = [
-    'cogs.titulos',
     'cogs.eventos',
     'cogs.miembros',
     'cogs.kvk',
-    'cogs.comandantes',
     'cogs.encuestas',
     'cogs.admin',
     'cogs.bienvenida',

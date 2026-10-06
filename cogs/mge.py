@@ -673,7 +673,9 @@ class PanelAdmin(discord.ui.LayoutView):
         canal_id = await db.get_config(str(guild.id), 'mge_canal_resultados')
         if canal_id:
             canal = guild.get_channel(int(canal_id))
-        canal = canal or buscar_canal(guild, 'mge-resultados') or interaction.channel
+        if not canal and ev['canal_id']:
+            canal = guild.get_channel(int(ev['canal_id']))  # mismo canal que el tablón
+        canal = canal or interaction.channel
         await canal.send(content=menciones or None, embed=embed)
 
         # Los MD se mandan en segundo plano para no hacer esperar al panel
@@ -786,7 +788,9 @@ class CrearModal(discord.ui.Modal, title='🔥 Nuevo MGE'):
 
         config = await db.get_canal_config(str(guild.id), 'mge-inscripciones')
         canal  = guild.get_channel(int(config['canal_id'])) if config else None
-        canal  = canal or buscar_canal(guild, 'mge-inscripciones') or interaction.channel
+        canal  = canal or next((c for c in guild.text_channels
+                                if c.name.split('│')[-1] in ('mge', 'mge-inscripciones')), None)
+        canal  = canal or interaction.channel
         tablon = await publicar_tablon(canal, evento_id)
 
         respuesta = f'✅ MGE creado y tablón publicado: {tablon.jump_url}\nGestiónalo con el botón ⚙️ del tablón.'

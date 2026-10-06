@@ -197,7 +197,7 @@ class Kvk(commands.Cog):
             name='💪 Preparación',
             value=(
                 'Revisad vuestras tropas, equipamiento y comandantes.\n'
-                'Estad atentos a **🎙️│kvk-coordinacion** y **🚩│coordinacion** para las órdenes del liderazgo.'
+                'Estad atentos a **🎙️│voz-guerra** y **💬│kvk-chat** para las órdenes del liderazgo.'
             ),
             inline=False,
         )

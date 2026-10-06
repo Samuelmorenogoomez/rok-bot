@@ -75,10 +75,8 @@ class Bienvenida(commands.Cog):
             value=(
                 '**1.** Ve al canal de miembros y pulsa 📝 **Registrarme**\n'
                 '_Go to the members channel and press 📝 **Register**_\n'
-                '**2.** Consulta `/comandante` para ver builds y equipamiento\n'
-                '_Use `/comandante` to check builds and equipment_\n'
-                '**3.** Usa `/pedir` para solicitar títulos de reino\n'
-                '_Use `/pedir` to request kingdom titles_'
+                '**2.** Mira el 📅 calendario y apúntate a los MGE en 📝 mge\n'
+                '_Check the 📅 calendar and sign up for MGEs in 📝 mge_'
             ),
             inline=False,
         )

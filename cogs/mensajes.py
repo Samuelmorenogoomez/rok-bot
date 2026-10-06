@@ -31,9 +31,7 @@ async def msg_bienvenida(canal: discord.TextChannel, guild: discord.Guild):
         value=(
             '🔥 Coordinación de guerra y KvK / War and KvK coordination\n'
             '🏹 Ark of Osiris y estrategia / Ark of Osiris and strategy\n'
-            '📅 Eventos y encuestas de la alianza / Alliance events and polls\n'
-            '🏰 Cola de títulos del reino / Kingdom title queue\n'
-            '🔍 Guías de comandantes y equipamiento / Commander and equipment guides'
+            '📅 Eventos, encuestas y MGE de la alianza / Alliance events, polls and MGE'
         ),
         inline=False,
     )
@@ -118,25 +116,6 @@ async def msg_comandos_bot(canal: discord.TextChannel):
         inline=False,
     )
     embed.add_field(
-        name='🏰 Cola de Títulos / Title Queue',
-        value=(
-            '`/pedir` — Pide un título / _Request a title (Duke, Architect, Scientist...)_\n'
-            '`/cola` — Ver la cola / _See who is waiting_\n'
-            '`/cancelar` — Sal de la cola / _Leave the queue_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='🔍 Canal de Comandantes / Commanders Channel',
-        value=(
-            '`/comandante [nombre]` — Info y equipo / _Info and equipment_\n'
-            '`/comandantes-lista` — Lista por tropa y tier / _List by troop and tier_\n'
-            '`/equipo [tropa] [rol] [fase]` — Equipamiento / _Equipment by troop and phase_\n'
-            '`/mi-equipo` — Tu equipamiento / _Your equipment_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name='⚔️ Canal de KvK / KvK Channel',
         value=(
             '`/kvk-importar` — Importa Excel de heroscroll.com / _Import Excel from heroscroll.com_\n'
@@ -175,54 +154,6 @@ async def msg_comandos_bot(canal: discord.TextChannel):
     return await canal.send(embed=embed)
 
 
-async def msg_titulos(canal: discord.TextChannel):
-    embed = discord.Embed(
-        title='🏰 Cola de Títulos del Reino / Kingdom Title Queue',
-        description=(
-            f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
-            'Los títulos otorgan **buffs temporales muy valiosos**. '
-            'Pídelos **antes** de empezar a entrenar, construir o investigar.\n'
-            '_Titles grant **very valuable temporary buffs**. '
-            'Request them **before** you start training, building or researching._'
-        ),
-        color=COLOR_BOT,
-    )
-    embed.add_field(
-        name='📋 Comandos / Commands',
-        value=(
-            '`/pedir` → Selecciona el título que necesitas / _Select the title you need_\n'
-            '`/cola` → Ve quién está esperando / _See who is waiting and their position_\n'
-            '`/cancelar` → Sal de la cola / _Leave the queue if you no longer need it_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='🎖️ Títulos disponibles / Available titles',
-        value=(
-            '⚔️ **Duke** — +10% velocidad de entrenamiento / _+10% troop training speed_\n'
-            '🏗️ **Architect** — +10% velocidad de construcción / _+10% building speed_\n'
-            '🔬 **Scientist** — +10% velocidad de investigación / _+10% research speed_\n'
-            '⚕️ **Justice** — +10% velocidad de curación / _+10% healing speed_\n'
-            '🛡️ **General** — Buffs de ataque y defensa / _Attack and defense buffs_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='⚠️ Importante / Important',
-        value=(
-            'El título **no tiene efecto** si ya empezaste la acción.\n'
-            '_The title **has no effect** if you already started the action._\n'
-            'Pide primero el título → espera a tenerlo → luego empieza.\n'
-            '_Request the title first → wait until you have it → then start._\n'
-            'No acapares el título más tiempo del necesario.\n'
-            '_Do not hold the title longer than necessary._'
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
-    return await canal.send(embed=embed)
-
-
 async def msg_miembros(canal: discord.TextChannel):
     from cogs.miembros import PanelMiembrosView
     embed = discord.Embed(
@@ -243,7 +174,7 @@ async def msg_miembros(canal: discord.TextChannel):
             '👤 **Mi perfil** → ver tu ficha / _see your profile_\n'
             '😴 **Ausencia** → avisa de que estarás inactivo / _report inactivity_\n'
             '✅ **He vuelto** → cancela tu ausencia / _cancel your absence_\n\n'
-            '`/perfil @usuario` · `/miembros` · `/mi-equipo`'
+            '`/perfil @usuario` · `/miembros`'
         ),
         inline=False,
     )
@@ -261,43 +192,6 @@ async def msg_miembros(canal: discord.TextChannel):
     embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
     return await canal.send(embed=embed, view=PanelMiembrosView())
 
-
-async def msg_comandantes(canal: discord.TextChannel):
-    embed = discord.Embed(
-        title='🔍 Guías de Comandantes y Equipamiento / Commander & Equipment Guides',
-        description=(
-            f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
-            'Consulta el mejor equipamiento y builds para cualquier comandante.\n'
-            '_Check the best equipment and builds for any commander in the game._'
-        ),
-        color=COLOR_BOT,
-    )
-    embed.add_field(
-        name='📋 Comandos / Commands',
-        value=(
-            '`/comandante [nombre]` → Info completa + equipo endgame / _Full info + endgame equipment_\n'
-            '`/comandantes-lista [tropa]` → Lista por tropa y tier / _List by troop type and tier_\n'
-            '`/equipo [tropa] [rol] [fase]` → Equipo por tropa y fase / _Equipment by troop and phase_\n'
-            '`/mi-equipo` → Tu equipo según tu registro / _Your equipment based on your registration_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='💡 Ejemplos / Examples',
-        value=(
-            '`/comandante guan` → Guan Yu\n'
-            '`/comandante nevsky` → Alexander Nevsky\n'
-            '`/equipo caballeria campo final` → Endgame cavalry set\n'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='🗂️ Fases de juego / Game phases',
-        value='🌱 Temprana / Early  →  ⚡ Media / Mid  →  🏆 Endgame (Season of Conquest)',
-        inline=False,
-    )
-    embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
-    return await canal.send(embed=embed)
 
 
 async def msg_kvk(canal: discord.TextChannel):
@@ -372,25 +266,15 @@ async def msg_ark(canal: discord.TextChannel):
             f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
             f'Canal de coordinación del **Ark of Osiris** de {ALIANZA_NOMBRE}.\n'
             f'_**Ark of Osiris** coordination channel for {ALIANZA_NOMBRE}._\n'
-            'Los equipos A, B, C y D tienen sus propios canales de voz.\n'
-            '_Teams A, B, C and D have their own voice channels._'
+            'Durante el evento, todos al canal de voz **🎙️│ark-voz**.\n'
+            '_During the event, everyone joins the **🎙️│ark-voz** voice channel._'
         ),
         color=0x9B59B6,
     )
     embed.add_field(
-        name='🎙️ Canales de voz / Voice channels',
-        value=(
-            '🎙️ **ark-equipo-a** — Equipo A / Team A\n'
-            '🎙️ **ark-equipo-b** — Equipo B / Team B\n'
-            '🎙️ **ark-equipo-c** — Equipo C / Team C\n'
-            '🎙️ **ark-equipo-d** — Equipo D / Team D'
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name='⚔️ Normas del Ark / Ark Rules',
         value=(
-            '• Conéctate al canal de voz de tu equipo **antes de empezar** / _Connect to your team\'s voice channel **before it starts**_\n'
+            '• Conéctate a **🎙️│ark-voz** **antes de empezar** / _Join **🎙️│ark-voz** **before it starts**_\n'
             '• Sigue las instrucciones del líder de equipo / _Follow your team leader\'s instructions_\n'
             '• Reporta posiciones enemigas en el chat / _Report enemy positions in chat_\n'
             '• No abandones el canal de voz durante el evento / _Do not leave the voice channel during the event_'
@@ -416,18 +300,18 @@ async def msg_kvk_anuncios(canal: discord.TextChannel):
     embed.add_field(
         name='🎙️ Canales de voz / Voice channels',
         value=(
-            '🎙️ **kvk-coordinacion** — Liderazgo y coordinadores / _Leadership and coordinators_\n'
-            '🎙️ **kvk-equipo-1** — Equipo de rally 1 / _Rally team 1_\n'
-            '🎙️ **kvk-equipo-2** — Equipo de campo 2 / _Field team 2_\n'
-            '🎙️ **kvk-equipo-3** — Equipo de defensa 3 / _Defense team 3_'
+            '🎙️ **voz-guerra** — Coordinación general / _General coordination_\n'
+            '🎙️ **equipo-1** — Equipo 1 / _Team 1_\n'
+            '🎙️ **equipo-2** — Equipo 2 / _Team 2_\n'
+            '💬 **kvk-chat** — Chat de KvK y guerra / _KvK and war chat_'
         ),
         inline=False,
     )
     embed.add_field(
         name='📋 Estadísticas KvK / KvK Stats',
         value=(
-            'Ve al canal **⚔️│kvk-stats** para consultar el ranking y buscar gobernadores.\n'
-            '_Go to **⚔️│kvk-stats** to check the ranking and search for governors._'
+            'Ve al canal **📊│kvk-stats** para consultar el ranking y buscar gobernadores.\n'
+            '_Go to **📊│kvk-stats** to check the ranking and search for governors._'
         ),
         inline=False,
     )
@@ -435,17 +319,15 @@ async def msg_kvk_anuncios(canal: discord.TextChannel):
     return await canal.send(embed=embed)
 
 
-async def msg_mge_inscripciones(canal: discord.TextChannel):
+async def msg_mge(canal: discord.TextChannel):
     embed = discord.Embed(
-        title='📝 MGE — Inscripciones / MGE Enrollment',
+        title='📝 MGE',
         description=(
             f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
             'Cada MGE tiene aquí su **tablón**: te apuntas con un botón y ves la lista en directo.\n'
-            '_Each MGE has its **board** here: sign up with one button and see the list live._\n'
-            'El liderazgo revisará las inscripciones y asignará las plazas.\n'
-            '_Leadership will review enrollments and assign slots._\n'
-            'La lista final se publicará en **🏆│mge-resultados**.\n'
-            '_The final list will be published in **🏆│mge-resultados**._'
+            '_Each MGE has its **board** here: sign up with one button and see the list live._\n\n'
+            '⚠️ Tienes que estar **registrado** en 👥│miembros para apuntarte.\n'
+            '_You must be **registered** in 👥│miembros to sign up._'
         ),
         color=COLOR_BOT,
     )
@@ -463,40 +345,9 @@ async def msg_mge_inscripciones(canal: discord.TextChannel):
         value=(
             '**1.** El liderazgo crea el MGE con su meta de poder / _Leadership creates the MGE with its power target_\n'
             '**2.** Te apuntas con ✋ en su tablón / _You sign up with ✋ on its board_\n'
-            '**3.** El liderazgo asigna posiciones y metas individuales / _Leadership assigns positions and individual targets_\n'
-            '**4.** La lista final se publica en 🏆│mge-resultados / _The final list is published in 🏆│mge-resultados_'
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
-    return await canal.send(embed=embed)
-
-
-async def msg_mge_resultados(canal: discord.TextChannel):
-    embed = discord.Embed(
-        title='🏆 MGE — Lista de Participantes / Participant List',
-        description=(
-            f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
-            'Aquí se publican las listas finales de participantes de cada MGE '
-            'con sus **posiciones y metas individuales** asignadas por el liderazgo.\n'
-            '_Here the final participant lists for each MGE are published '
-            'with their **positions and individual targets** assigned by leadership._'
-        ),
-        color=0xFFD700,
-    )
-    embed.add_field(
-        name='📋 Comandos / Commands',
-        value=(
-            '`/mge-historial` → Historial de MGEs y participaciones\n'
-            '_MGE history and participations_'
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='ℹ️ Para inscribirte / To sign up',
-        value=(
-            'Ve al canal **📝│mge-inscripciones** y pulsa ✋ en el tablón\n'
-            '_Go to **📝│mge-inscripciones** and press ✋ on the board_'
+            '**3.** El liderazgo asigna plazas y metas / _Leadership assigns slots and targets_\n'
+            '**4.** La lista final se publica aquí y te llega por MD / _The final list is posted here and sent to you by DM_\n\n'
+            '`/mge-historial` → historial de MGEs / _MGE history_'
         ),
         inline=False,
     )
@@ -568,24 +419,40 @@ async def msg_scouting(canal: discord.TextChannel):
 # ── Mapa canal → función ───────────────────────────────────────────────────────
 
 MENSAJES_POR_CANAL = {
-    'bienvenida':       msg_bienvenida,
-    'reglas':           msg_reglas,
-    'comandos-bot':     msg_comandos_bot,
-    'cola-titulos':     msg_titulos,
-    'miembros':         msg_miembros,
-    'comandantes':      msg_comandantes,
-    'kvk-stats':        msg_kvk,
-    'kvk-bajas':        msg_kvk,
-    'encuestas':        msg_encuestas,
-    'encuestas-fechas': msg_encuestas,
-    'ark-general':      msg_ark,
-    'kvk-anuncios':     msg_kvk_anuncios,
-    'scouting':         msg_scouting,
-    'kvk-scouting':     msg_scouting,
-    'reclutamiento':    msg_reclutamiento,
-    'mge-inscripciones': msg_mge_inscripciones,
-    'mge-resultados':   msg_mge_resultados,
+    'bienvenida':    [msg_bienvenida, msg_reglas, msg_comandos_bot],
+    'miembros':      [msg_miembros],
+    'kvk-stats':     [msg_kvk],
+    'encuestas':     [msg_encuestas],
+    'ark':           [msg_ark],
+    'kvk-anuncios':  [msg_kvk_anuncios],
+    'scouting':      [msg_scouting],
+    'reclutamiento': [msg_reclutamiento],
+    'mge':           [msg_mge],
 }
+
+
+def nombre_limpio(canal: discord.abc.GuildChannel) -> str:
+    return canal.name.split('│')[-1]
+
+
+async def publicar_mensajes(canal: discord.TextChannel) -> int:
+    """Publica y ancla los mensajes fijos del canal, quitando antes los que el bot tuviera anclados."""
+    funciones = MENSAJES_POR_CANAL.get(nombre_limpio(canal), [])
+    if not funciones:
+        return 0
+    for viejo in [m async for m in canal.pins()]:
+        if viejo.author == canal.guild.me:
+            try:
+                await viejo.delete()
+            except discord.HTTPException:
+                pass
+    for fn in funciones:
+        msg = await (fn(canal, canal.guild) if fn is msg_bienvenida else fn(canal))
+        try:
+            await msg.pin()
+        except discord.HTTPException:
+            pass
+    return len(funciones)
 
 
 class Mensajes(commands.Cog):
@@ -606,31 +473,14 @@ class Mensajes(commands.Cog):
         omitidos   = 0
 
         for canal in interaction.guild.text_channels:
-            nombre_limpio = canal.name.split('│')[-1] if '│' in canal.name else canal.name
-
-            fn = MENSAJES_POR_CANAL.get(nombre_limpio)
-            if not fn:
+            if nombre_limpio(canal) not in MENSAJES_POR_CANAL:
+                continue
+            # Si el bot ya tiene un mensaje anclado ahí, no se toca (para rehacerlo: /actualizar-mensaje)
+            if any([m.author == interaction.guild.me async for m in canal.pins()]):
                 omitidos += 1
                 continue
-
-            hay_mensajes = [
-                m async for m in canal.history(limit=10)
-                if m.author == interaction.guild.me and m.type == discord.MessageType.default
-            ]
-            if hay_mensajes:
-                omitidos += 1
-                continue
-
             try:
-                if nombre_limpio == 'bienvenida':
-                    msg = await fn(canal, interaction.guild)
-                else:
-                    msg = await fn(canal)
-                if msg:
-                    try:
-                        await msg.pin()
-                    except (discord.Forbidden, discord.HTTPException):
-                        pass
+                await publicar_mensajes(canal)
                 publicados += 1
             except Exception as e:
                 print(f'[mensajes] Error en #{canal.name}: {type(e).__name__}: {e}')
@@ -643,34 +493,25 @@ class Mensajes(commands.Cog):
 
     @app_commands.command(
         name='actualizar-mensaje',
-        description='[ADMIN] Publica el mensaje informativo en un canal concreto'
+        description='[ADMIN] Rehace el mensaje fijo de un canal (sustituye al anclado anterior)'
     )
     @app_commands.describe(canal='Canal donde publicar el mensaje')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def actualizar_mensaje(self, interaction: discord.Interaction, canal: discord.TextChannel):
-        nombre_limpio = canal.name.split('│')[-1] if '│' in canal.name else canal.name
-        fn = MENSAJES_POR_CANAL.get(nombre_limpio)
-
-        if not fn:
+        if nombre_limpio(canal) not in MENSAJES_POR_CANAL:
             await interaction.response.send_message(
-                f'❌ No hay mensaje configurado para **{canal.name}**.',
-                ephemeral=True,
+                f'❌ No hay mensaje configurado para **{canal.name}**.', ephemeral=True,
             )
             return
-
+        await interaction.response.defer(ephemeral=True)
         try:
-            if nombre_limpio == 'bienvenida':
-                msg = await fn(canal, interaction.guild)
-            else:
-                msg = await fn(canal)
-            if msg:
-                try:
-                    await msg.pin()
-                except discord.Forbidden:
-                    pass
-            await interaction.response.send_message(f'✅ Mensaje publicado y fijado en {canal.mention}.', ephemeral=True)
+            await publicar_mensajes(canal)
         except discord.Forbidden:
-            await interaction.response.send_message(f'❌ Sin permisos para escribir en {canal.mention}.', ephemeral=True)
+            await interaction.followup.send(f'❌ Sin permisos para escribir en {canal.mention}.', ephemeral=True)
+            return
+        await interaction.followup.send(
+            f'✅ Mensaje publicado y anclado en {canal.mention} (el anterior del bot se ha quitado).', ephemeral=True
+        )
 
     @inicializar_mensajes.error
     @actualizar_mensaje.error
