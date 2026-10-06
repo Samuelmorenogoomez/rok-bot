@@ -73,8 +73,8 @@ class Bienvenida(commands.Cog):
         embed.add_field(
             name='📋 Primeros pasos / First steps',
             value=(
-                '**1.** Ve al canal de miembros y usa `/registrar`\n'
-                '_Go to the members channel and use `/registrar`_\n'
+                '**1.** Ve al canal de miembros y pulsa 📝 **Registrarme**\n'
+                '_Go to the members channel and press 📝 **Register**_\n'
                 '**2.** Consulta `/comandante` para ver builds y equipamiento\n'
                 '_Use `/comandante` to check builds and equipment_\n'
                 '**3.** Usa `/pedir` para solicitar títulos de reino\n'

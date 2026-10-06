@@ -17,10 +17,10 @@ async def msg_bienvenida(canal: discord.TextChannel, guild: discord.Guild):
             f'Para acceder al servidor completo debes **registrarte** con tu perfil de gobernador.\n'
             f'_To access the full server you must **register** your governor profile._\n\n'
             f'**¿Cómo empezar? / How to start?**\n'
-            f'1. Ve al canal <#{canal_miembros}> y usa `/registrar`\n'
-            f'   _Go to <#{canal_miembros}> and use `/registrar`_\n'
-            f'2. Introduce tu nombre de gobernador, poder y tipo de tropa\n'
-            f'   _Enter your governor name, power and troop type_\n'
+            f'1. Ve al canal <#{canal_miembros}> y pulsa 📝 **Registrarme**\n'
+            f'   _Go to <#{canal_miembros}> and press 📝 **Register**_\n'
+            f'2. Rellena el formulario: nombre de gobernador, poder y tropa\n'
+            f'   _Fill in the form: governor name, power and troop_\n'
             f'3. El bot te asignará tu rol y tendrás acceso completo\n'
             f'   _The bot will assign your role and you will have full access_'
         ),
@@ -110,11 +110,10 @@ async def msg_comandos_bot(canal: discord.TextChannel):
     embed.add_field(
         name='👥 Canal de Miembros / Members Channel',
         value=(
-            '`/registrar` — Regístrate / _Register your governor, power and troop_\n'
+            '📝 Botón **Registrarme** en el canal de miembros / _**Register** button in the members channel_\n'
             '`/perfil [@usuario]` — Tu perfil o el de otro / _Your profile or another member\'s_\n'
             '`/miembros` — Lista por poder / _List all members by power_\n'
-            '`/ausente [días] [motivo]` — Avisa inactividad / _Report inactivity_\n'
-            '`/volver` — Cancela tu ausencia / _Cancel your absence_'
+            '😴 Botones **Ausencia** y **He vuelto** en el canal de miembros / _**Absence** and **I\'m back** buttons_'
         ),
         inline=False,
     )
@@ -225,6 +224,7 @@ async def msg_titulos(canal: discord.TextChannel):
 
 
 async def msg_miembros(canal: discord.TextChannel):
+    from cogs.miembros import PanelMiembrosView
     embed = discord.Embed(
         title='👥 Registro de Miembros / Member Registration',
         description=(
@@ -237,14 +237,13 @@ async def msg_miembros(canal: discord.TextChannel):
         color=COLOR_BOT,
     )
     embed.add_field(
-        name='📋 Comandos / Commands',
+        name='🔘 Botones / Buttons',
         value=(
-            '`/registrar` → Vincula tu Discord con tu gobernador / _Link your Discord to your governor_\n'
-            '`/perfil [@usuario]` → Tu perfil o el de otro / _Your profile or another member\'s_\n'
-            '`/miembros` → Lista todos por poder / _List all members by power_\n'
-            '`/mi-equipo` → Equipamiento según tu tropa / _Equipment for your troop type_\n'
-            '`/ausente [días] [motivo]` → Avisa inactividad / _Report inactivity_\n'
-            '`/volver` → Cancela tu ausencia / _Cancel your absence when you return_'
+            '📝 **Registrarme / Actualizar** → formulario con tus datos / _form with your details_\n'
+            '👤 **Mi perfil** → ver tu ficha / _see your profile_\n'
+            '😴 **Ausencia** → avisa de que estarás inactivo / _report inactivity_\n'
+            '✅ **He vuelto** → cancela tu ausencia / _cancel your absence_\n\n'
+            '`/perfil @usuario` · `/miembros` · `/mi-equipo`'
         ),
         inline=False,
     )
@@ -260,7 +259,7 @@ async def msg_miembros(canal: discord.TextChannel):
         inline=False,
     )
     embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
-    return await canal.send(embed=embed)
+    return await canal.send(embed=embed, view=PanelMiembrosView())
 
 
 async def msg_comandantes(canal: discord.TextChannel):

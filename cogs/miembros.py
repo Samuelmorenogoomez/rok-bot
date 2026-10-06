@@ -52,42 +52,53 @@ def fmt_hasta(hasta_str: str) -> str:
         return hasta_str
 
 
-class Miembros(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    # ── /registrar ─────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='registrar', description='Regístrate con tu información de gobernador / Register your governor info')
-    @solo_en_canal('miembros')
-    @app_commands.describe(
-        gobernador='Tu nombre de gobernador en el juego / Your in-game governor name',
-        poder='Tu poder actual (ej: 150M, 50000K) / Your current power (e.g. 150M)',
-        tropa='Tu tipo de tropa principal / Your main troop type',
+def embed_perfil(target: discord.abc.User, miembro, ausencia) -> discord.Embed:
+    embed = discord.Embed(
+        title=f'{"😴 " if ausencia else "👤 "}{miembro["gobernador"]}',
+        color=0x95A5A6 if ausencia else COLOR_BOT,
     )
-    @app_commands.choices(tropa=[
-        app_commands.Choice(name='⚔️ Infantería / Infantry', value='infanteria'),
-        app_commands.Choice(name='🐴 Caballería / Cavalry',  value='caballeria'),
-        app_commands.Choice(name='🏹 Arqueros / Archers',    value='arqueros'),
-        app_commands.Choice(name='⚙️ Maquinaria / Siege',   value='maquinaria'),
-        app_commands.Choice(name='🔀 Mixto / Mixed',         value='mixto'),
-    ])
-    async def registrar(self, interaction: discord.Interaction, gobernador: str, poder: str, tropa: str):
-        rol_nuevo   = discord.utils.get(interaction.guild.roles, name='🔰 Nuevo')
-        rol_miembro = discord.utils.get(interaction.guild.roles, name='🌿 Miembro')
-        tiene_acceso = (
-            (rol_nuevo   and rol_nuevo   in interaction.user.roles) or
-            (rol_miembro and rol_miembro in interaction.user.roles)
-        )
-        if not tiene_acceso:
-            await interaction.response.send_message(
-                '❌ Para registrarte primero debes solicitar el ingreso en **⚔️│reclutamiento**.\n'
-                '_To register you must first apply in **⚔️│reclutamiento** and be approved by leadership._',
-                ephemeral=True,
-            )
-            return
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name='Poder / Power', value=fmt_poder(miembro['poder']),                     inline=True)
+    embed.add_field(name='Tropa / Troop', value=TROPAS.get(miembro['tropa'], miembro['tropa']), inline=True)
+    if ausencia:
+        embed.add_field(name='😴 Ausente hasta / Absent until', value=fmt_hasta(ausencia['hasta']), inline=False)
+        if ausencia['motivo']:
+            embed.add_field(name='Motivo / Reason', value=ausencia['motivo'], inline=False)
+    embed.set_footer(text=f'Discord: {target.display_name} · {ALIANZA_TAG} · Reino {REINO}')
+    return embed
 
-        poder_int = parse_poder(poder)
+
+def puede_registrarse(member: discord.Member) -> bool:
+    """Solo los aprobados en reclutamiento (🔰 Nuevo) o los que ya son 🌿 Miembro."""
+    return any(r.name in ('🔰 Nuevo', '🌿 Miembro') for r in member.roles)
+
+
+# ── Formularios ────────────────────────────────────────────────────────────────
+
+class RegistroModal(discord.ui.Modal, title='📝 Registro / Registration'):
+    def __init__(self, miembro=None):
+        super().__init__()
+        self.gobernador = discord.ui.TextInput(
+            placeholder='Tal cual aparece en el juego / Exactly as in-game', max_length=50,
+            default=miembro['gobernador'] if miembro else None,
+        )
+        self.poder = discord.ui.TextInput(
+            placeholder='Ej: 150M, 50000K', max_length=20,
+            default=fmt_poder(miembro['poder']) if miembro else None,
+        )
+        tropa_actual = miembro['tropa'] if miembro else None
+        self.tropa = discord.ui.Select(
+            placeholder='Elige tu tropa / Pick your troop',
+            options=[discord.SelectOption(label=nombre, value=clave, emoji=TROPAS_EMOJI[clave],
+                                          default=clave == tropa_actual)
+                     for clave, nombre in TROPAS.items()],
+        )
+        self.add_item(discord.ui.Label(text='Nombre de gobernador / Governor name', component=self.gobernador))
+        self.add_item(discord.ui.Label(text='Poder actual / Current power', component=self.poder))
+        self.add_item(discord.ui.Label(text='Tropa principal / Main troop', component=self.tropa))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        poder_int = parse_poder(self.poder.value)
         if poder_int < 0:
             await interaction.response.send_message(
                 '❌ Formato de poder incorrecto. Usa: `150M`, `50000K` o `150000000`\n'
@@ -95,24 +106,113 @@ class Miembros(commands.Cog):
                 ephemeral=True,
             )
             return
+        nuevo = await db.get_member(str(interaction.guild_id), str(interaction.user.id)) is None
+        tropa = self.tropa.values[0]
+        gobernador = self.gobernador.value.strip()
+        await db.upsert_member(str(interaction.guild_id), str(interaction.user.id),
+                               interaction.user.display_name, gobernador, poder_int, tropa)
+        try:
+            await asignar_rol_tropa(interaction.user, tropa)
+        except discord.HTTPException as e:
+            print(f'[miembros] No se pudieron asignar roles a {interaction.user}: {e}')
 
-        await db.upsert_member(
-            str(interaction.guild_id),
-            str(interaction.user.id),
-            interaction.user.display_name,
-            gobernador,
-            poder_int,
-            tropa,
+        embed = discord.Embed(
+            title='✅ ¡Registrado! / Registered!' if nuevo else '✅ Perfil actualizado / Profile updated',
+            color=COLOR_BOT,
         )
-        await asignar_rol_tropa(interaction.user, tropa)
-
-        embed = discord.Embed(title='✅ Perfil registrado / Profile registered', color=COLOR_BOT)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.add_field(name='Gobernador / Governor', value=gobernador,           inline=True)
         embed.add_field(name='Poder / Power',          value=fmt_poder(poder_int), inline=True)
         embed.add_field(name='Tropa / Troop',          value=TROPAS[tropa],        inline=True)
-        embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
-        await interaction.response.send_message(embed=embed)
+        embed.set_footer(text=f'Puedes actualizarlo cuando quieras con 📝 · {ALIANZA_TAG} · Reino {REINO}')
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class AusenciaModal(discord.ui.Modal, title='😴 Ausencia / Absence'):
+    def __init__(self):
+        super().__init__()
+        self.dias   = discord.ui.TextInput(placeholder='1 – 60', max_length=2)
+        self.motivo = discord.ui.TextInput(placeholder='Vacaciones, trabajo… / Holidays, work…', max_length=200,
+                                           style=discord.TextStyle.paragraph, required=False)
+        self.add_item(discord.ui.Label(text='¿Cuántos días? / How many days?', component=self.dias))
+        self.add_item(discord.ui.Label(text='Motivo (opcional) / Reason (optional)', component=self.motivo))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        dias = self.dias.value.strip()
+        if not dias.isdigit() or not 1 <= int(dias) <= 60:
+            await interaction.response.send_message(
+                '❌ Los días deben ser un número entre 1 y 60. / Days must be between 1 and 60.', ephemeral=True
+            )
+            return
+        hasta = datetime.utcnow() + timedelta(days=int(dias))
+        await db.set_ausencia(str(interaction.guild_id), str(interaction.user.id),
+                              hasta.strftime('%Y-%m-%d %H:%M:%S'), self.motivo.value.strip())
+        await interaction.response.send_message(
+            f'😴 Ausencia registrada hasta el **{hasta.strftime("%d/%m/%Y")}** ({dias} días).\n'
+            f'_Absence registered until **{hasta.strftime("%d/%m/%Y")}**._\n'
+            'Cuando vuelvas pulsa ✅ **He vuelto** (o caduca sola). / _Press ✅ when you are back (or it expires)._',
+            ephemeral=True,
+        )
+
+
+# ── Panel anclado del canal de miembros ────────────────────────────────────────
+
+class PanelMiembrosView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Registrarme / Actualizar', emoji='📝', style=discord.ButtonStyle.success,
+                       custom_id='miembros:registrar')
+    async def registrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not puede_registrarse(interaction.user):
+            await interaction.response.send_message(
+                '❌ Para registrarte primero debes solicitar el ingreso en **⚔️│reclutamiento**.\n'
+                '_To register you must first apply in **⚔️│reclutamiento** and be approved by leadership._',
+                ephemeral=True,
+            )
+            return
+        miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
+        await interaction.response.send_modal(RegistroModal(miembro))
+
+    @discord.ui.button(label='Mi perfil', emoji='👤', style=discord.ButtonStyle.primary, custom_id='miembros:perfil')
+    async def perfil(self, interaction: discord.Interaction, button: discord.ui.Button):
+        miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
+        if not miembro:
+            await interaction.response.send_message(
+                'Todavía no tienes perfil: pulsa 📝 **Registrarme**. / _No profile yet: press 📝._', ephemeral=True
+            )
+            return
+        ausencia = await db.get_ausencia(str(interaction.guild_id), str(interaction.user.id))
+        await interaction.response.send_message(embed=embed_perfil(interaction.user, miembro, ausencia), ephemeral=True)
+
+    @discord.ui.button(label='Ausencia', emoji='😴', style=discord.ButtonStyle.secondary, custom_id='miembros:ausencia')
+    async def ausencia(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await db.get_member(str(interaction.guild_id), str(interaction.user.id)):
+            await interaction.response.send_message(
+                '❌ Primero regístrate con 📝. / _Register first with 📝._', ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(AusenciaModal())
+
+    @discord.ui.button(label='He vuelto', emoji='✅', style=discord.ButtonStyle.secondary, custom_id='miembros:volver')
+    async def volver(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await db.get_ausencia(str(interaction.guild_id), str(interaction.user.id)):
+            await interaction.response.send_message(
+                'ℹ️ No tienes ninguna ausencia activa. / You have no active absence.', ephemeral=True
+            )
+            return
+        await db.clear_ausencia(str(interaction.guild_id), str(interaction.user.id))
+        await interaction.response.send_message(
+            f'✅ ¡Bienvenido de vuelta, **{interaction.user.display_name}**! / Welcome back!', ephemeral=True
+        )
+
+
+class Miembros(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    async def cog_load(self):
+        self.bot.add_view(PanelMiembrosView())
 
     # ── /registrar-miembro ─────────────────────────────────────────────────────
 
@@ -215,7 +315,8 @@ class Miembros(commands.Cog):
 
         if not miembro:
             msg = (
-                'No tienes perfil. Usa `/registrar`.\n_You have no profile. Use `/registrar`._'
+                'No tienes perfil. Pulsa 📝 **Registrarme** en el canal de miembros.\n'
+                '_You have no profile. Press 📝 **Register** in the members channel._'
                 if not usuario else
                 f'{target.display_name} no tiene perfil. / {target.display_name} has no profile.'
             )
@@ -223,26 +324,7 @@ class Miembros(commands.Cog):
             return
 
         ausencia = await db.get_ausencia(str(interaction.guild_id), str(target.id))
-
-        embed = discord.Embed(
-            title=f'{"😴 " if ausencia else "👤 "}{miembro["gobernador"]}',
-            color=0x95A5A6 if ausencia else COLOR_BOT,
-        )
-        embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name='Poder / Power', value=fmt_poder(miembro['poder']),                     inline=True)
-        embed.add_field(name='Tropa / Troop', value=TROPAS.get(miembro['tropa'], miembro['tropa']), inline=True)
-
-        if ausencia:
-            embed.add_field(
-                name='😴 Ausente hasta / Absent until',
-                value=fmt_hasta(ausencia['hasta']),
-                inline=False,
-            )
-            if ausencia['motivo']:
-                embed.add_field(name='Motivo / Reason', value=ausencia['motivo'], inline=False)
-
-        embed.set_footer(text=f'Discord: {target.display_name} · {ALIANZA_TAG} · Reino {REINO}')
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed_perfil(target, miembro, ausencia))
 
     # ── /miembros ──────────────────────────────────────────────────────────────
 
@@ -254,7 +336,7 @@ class Miembros(commands.Cog):
 
         if not lista:
             await interaction.response.send_message(
-                'No hay miembros registrados. Usa `/registrar`.\n_No registered members. Use `/registrar`._',
+                'No hay miembros registrados. Pulsad 📝 **Registrarme** en este canal.\n_No registered members. Press 📝 **Register**._',
                 ephemeral=True,
             )
             return
@@ -273,62 +355,6 @@ class Miembros(commands.Cog):
         )
         embed.set_footer(text=f'😴 = ausente temporalmente / temporarily absent · {ALIANZA_TAG} · Reino {REINO}')
         await interaction.response.send_message(embed=embed)
-
-    # ── /ausente ───────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='ausente', description='Avisa que estarás inactivo un tiempo / Report that you will be inactive')
-    @solo_en_canal('miembros')
-    @app_commands.describe(
-        dias='Días que estarás ausente (1–60) / Days you will be absent (1–60)',
-        motivo='Motivo de la ausencia (opcional) / Reason for absence (optional)',
-    )
-    async def ausente(self, interaction: discord.Interaction, dias: int, motivo: str = ''):
-        if not 1 <= dias <= 60:
-            await interaction.response.send_message(
-                '❌ El número de días debe estar entre 1 y 60. / Days must be between 1 and 60.',
-                ephemeral=True,
-            )
-            return
-
-        miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
-        if not miembro:
-            await interaction.response.send_message(
-                '❌ No tienes perfil. Usa `/registrar` primero.\n_You have no profile. Use `/registrar` first._',
-                ephemeral=True,
-            )
-            return
-
-        hasta     = datetime.utcnow() + timedelta(days=dias)
-        hasta_str = hasta.strftime('%Y-%m-%d %H:%M:%S')
-        await db.set_ausencia(str(interaction.guild_id), str(interaction.user.id), hasta_str, motivo)
-
-        embed = discord.Embed(title='😴 Ausencia registrada / Absence registered', color=0x95A5A6)
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.add_field(name='Gobernador / Governor', value=miembro['gobernador'],      inline=True)
-        embed.add_field(name='Días / Days',            value=str(dias),                  inline=True)
-        embed.add_field(name='Hasta / Until',          value=hasta.strftime('%d/%m/%Y'), inline=True)
-        if motivo:
-            embed.add_field(name='Motivo / Reason', value=motivo, inline=False)
-        embed.set_footer(text='Usa /volver cuando regreses · Use /volver when you return · Expires automatically')
-        await interaction.response.send_message(embed=embed)
-
-    # ── /volver ────────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='volver', description='Cancela tu ausencia y vuelves a estar activo / Cancel your absence and become active again')
-    @solo_en_canal('miembros')
-    async def volver(self, interaction: discord.Interaction):
-        ausencia = await db.get_ausencia(str(interaction.guild_id), str(interaction.user.id))
-        if not ausencia:
-            await interaction.response.send_message(
-                'ℹ️ No tienes ninguna ausencia activa. / You have no active absence.', ephemeral=True
-            )
-            return
-
-        await db.clear_ausencia(str(interaction.guild_id), str(interaction.user.id))
-        await interaction.response.send_message(
-            f'✅ ¡Bienvenido de vuelta, **{interaction.user.display_name}**! / Welcome back!\n'
-            f'_Tu ausencia ha sido cancelada. / Your absence has been cancelled._',
-        )
 
     # ── /ausentes ──────────────────────────────────────────────────────────────
 
@@ -386,7 +412,7 @@ class Miembros(commands.Cog):
         )
         if len(sin_reg) > 30:
             embed.description += f'\n_...y {len(sin_reg) - 30} más / and {len(sin_reg) - 30} more_'
-        embed.set_footer(text=f'Pídeles que usen /registrar · Ask them to use /registrar · {ALIANZA_TAG} · Reino {REINO}')
+        embed.set_footer(text=f'Pídeles que pulsen 📝 Registrarme · Ask them to press 📝 Register · {ALIANZA_TAG} · Reino {REINO}')
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Errores ────────────────────────────────────────────────────────────────

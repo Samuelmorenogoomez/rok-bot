@@ -261,7 +261,7 @@ class Admin(commands.Cog):
         app_commands.Choice(name='🏰 Cola de títulos  (/pedir, /cola...)',        value='titulos'),
         app_commands.Choice(name='⚔️ KvK  (/kvk-matar, /kvk-ranking...)',        value='kvk'),
         app_commands.Choice(name='📊 Encuestas  (/encuesta, /fecha, /si-no)',     value='encuestas'),
-        app_commands.Choice(name='👥 Miembros  (/registrar, /perfil, /miembros)', value='miembros'),
+        app_commands.Choice(name='👥 Miembros  (/perfil, /miembros)', value='miembros'),
         app_commands.Choice(name='🔍 Comandantes  (/comandante, /equipo...)',     value='comandantes'),
         app_commands.Choice(name='📝 MGE Inscripciones  (tablones con botones)', value='mge-inscripciones'),
         app_commands.Choice(name='🏆 MGE Resultados  (lista final publicada)',           value='mge-resultados'),

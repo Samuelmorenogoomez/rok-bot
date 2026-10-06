@@ -245,7 +245,7 @@ class DecisionView(discord.ui.View):
             title='✅ ¡Solicitud aprobada!',
             description=(
                 f'{member.mention if member else "El candidato"} ha sido aceptado en **{ALIANZA_FULL}**. 🔥\n\n'
-                f'Ve al canal de miembros y usa `/registrar` para completar tu perfil.'
+                f'Ve al canal de miembros y pulsa 📝 **Registrarme** para completar tu perfil.'
             ),
             color=0x2ECC71,
         )
@@ -259,7 +259,7 @@ class DecisionView(discord.ui.View):
                     title=f'🎉 ¡Bienvenido a {ALIANZA_FULL}!',
                     description=(
                         f'Tu solicitud ha sido **aprobada**. ¡Ya eres parte del **Reino {REINO}**!\n\n'
-                        f'Ve al canal de miembros y usa `/registrar` para completar tu perfil.'
+                        f'Ve al canal de miembros y pulsa 📝 **Registrarme** para completar tu perfil.'
                     ),
                     color=0x2ECC71,
                 )

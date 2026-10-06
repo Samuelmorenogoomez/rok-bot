@@ -151,7 +151,7 @@ class Comandantes(commands.Cog):
         miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
         if not miembro:
             await interaction.response.send_message(
-                "❌ No tienes perfil. Usa `/registrar` primero.", ephemeral=True
+                "❌ No tienes perfil. Pulsa 📝 **Registrarme** en el canal de miembros.", ephemeral=True
             )
             return
 

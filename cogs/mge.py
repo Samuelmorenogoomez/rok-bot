@@ -227,8 +227,8 @@ async def guardar_inscripcion(interaction: discord.Interaction, evento_id: int,
     else:
         texto = f'✅ Cabezas actualizadas: 🗿 **{mostrar}** / _Heads updated_'
     if not miembro:
-        texto += ('\n\nℹ️ No tienes perfil: apareces como **' + gobernador + '**. Usa `/registrar` para salir con tu '
-                  'nombre de gobernador y tu poder. / _No profile yet: use `/registrar` to show your governor name._')
+        texto += ('\n\nℹ️ No tienes perfil: apareces como **' + gobernador + '**. Pulsa 📝 **Registrarme** en el '
+                  'canal de miembros para salir con tu nombre de gobernador. / _No profile yet: press 📝 in the members channel._')
     return texto
 
 
