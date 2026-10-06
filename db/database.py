@@ -386,6 +386,31 @@ async def get_guild_events(guild_id: str) -> list:
         return await cursor.fetchall()
 
 
+async def get_event(event_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute('SELECT * FROM eventos WHERE id=?', (event_id,))
+        return await cursor.fetchone()
+
+
+async def update_event(event_id: int, nombre: str, hora: str, dias: str,
+                       puntual: bool, fecha_unica: str, rol_ping: str):
+    # Se reinician las marcas de aviso para que, si cambia la hora, se vuelva a avisar hoy
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE eventos SET nombre=?, hora=?, dias=?, puntual=?, fecha_unica=?, rol_ping=?,
+                               dia_ultimo_aviso='', dia_ultima_ejecucion=''
+            WHERE id=?
+        ''', (nombre, hora, dias, int(puntual), fecha_unica, rol_ping, event_id))
+        await db.commit()
+
+
+async def update_event_canal(event_id: int, canal_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE eventos SET canal_id=? WHERE id=?', (canal_id, event_id))
+        await db.commit()
+
+
 async def delete_event(guild_id: str, event_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
