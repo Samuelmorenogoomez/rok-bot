@@ -158,9 +158,8 @@ async def msg_comandos_bot(canal: discord.TextChannel):
     embed.add_field(
         name='📝 MGE Inscripciones / MGE Enrollment',
         value=(
-            '`/mge-lista` — Ver MGEs activos / _See active MGEs_\n'
-            '`/mge-inscribir` — Apuntarte / _Sign up for an MGE_\n'
-            '`/mge-salir` — Cancelar inscripción / _Cancel enrollment_'
+            'Pulsa ✋ en el tablón del MGE para apuntarte / _Press ✋ on the MGE board to sign up_\n'
+            '`/mge-historial` — Historial de MGEs / _MGE history_'
         ),
         inline=False,
     )
@@ -442,8 +441,8 @@ async def msg_mge_inscripciones(canal: discord.TextChannel):
         title='📝 MGE — Inscripciones / MGE Enrollment',
         description=(
             f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
-            'Aquí puedes ver los MGEs disponibles y apuntarte.\n'
-            '_Here you can see available MGEs and sign up._\n'
+            'Cada MGE tiene aquí su **tablón**: te apuntas con un botón y ves la lista en directo.\n'
+            '_Each MGE has its **board** here: sign up with one button and see the list live._\n'
             'El liderazgo revisará las inscripciones y asignará las plazas.\n'
             '_Leadership will review enrollments and assign slots._\n'
             'La lista final se publicará en **🏆│mge-resultados**.\n'
@@ -452,11 +451,11 @@ async def msg_mge_inscripciones(canal: discord.TextChannel):
         color=COLOR_BOT,
     )
     embed.add_field(
-        name='📋 Comandos / Commands',
+        name='🔘 Botones del tablón / Board buttons',
         value=(
-            '`/mge-lista` → Ver los MGEs activos y sus metas / _See active MGEs and their targets_\n'
-            '`/mge-inscribir` → Apuntarte a un MGE / _Sign up for an MGE_\n'
-            '`/mge-salir` → Cancelar tu inscripción / _Cancel your enrollment_'
+            '✋ **Apuntarme** → eliges tus cabezas doradas y listo / _pick your golden heads and done_\n'
+            '🗿 **Mis cabezas** → cambiar cuántas tienes / _change how many you have_\n'
+            '🚪 **Salir** → borrarte del MGE / _leave the MGE_'
         ),
         inline=False,
     )
@@ -464,7 +463,7 @@ async def msg_mge_inscripciones(canal: discord.TextChannel):
         name='⚙️ Cómo funciona / How it works',
         value=(
             '**1.** El liderazgo crea el MGE con su meta de poder / _Leadership creates the MGE with its power target_\n'
-            '**2.** Te inscribes aquí con `/mge-inscribir` / _You sign up here with `/mge-inscribir`_\n'
+            '**2.** Te apuntas con ✋ en su tablón / _You sign up with ✋ on its board_\n'
             '**3.** El liderazgo asigna posiciones y metas individuales / _Leadership assigns positions and individual targets_\n'
             '**4.** La lista final se publica en 🏆│mge-resultados / _The final list is published in 🏆│mge-resultados_'
         ),
@@ -489,16 +488,16 @@ async def msg_mge_resultados(canal: discord.TextChannel):
     embed.add_field(
         name='📋 Comandos / Commands',
         value=(
-            '`/mge-seleccionados` → Ver los participantes elegidos del MGE activo\n'
-            '_See the selected participants for the active MGE_'
+            '`/mge-historial` → Historial de MGEs y participaciones\n'
+            '_MGE history and participations_'
         ),
         inline=False,
     )
     embed.add_field(
         name='ℹ️ Para inscribirte / To sign up',
         value=(
-            'Ve al canal **📝│mge-inscripciones** y usa `/mge-inscribir`\n'
-            '_Go to **📝│mge-inscripciones** and use `/mge-inscribir`_'
+            'Ve al canal **📝│mge-inscripciones** y pulsa ✋ en el tablón\n'
+            '_Go to **📝│mge-inscripciones** and press ✋ on the board_'
         ),
         inline=False,
     )

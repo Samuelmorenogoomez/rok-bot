@@ -1,9 +1,10 @@
+import time
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import COLOR_BOT, ALIANZA_TAG, ALIANZA_FULL, REINO
-from checks import solo_en_canal
 from db import database as db
 
 
@@ -27,572 +28,791 @@ def fmt_poder(n: int) -> str:
     return str(n)
 
 
+# ── Constantes ─────────────────────────────────────────────────────────────────
+
+MAX_PLAZAS = 25  # límite de opciones de un desplegable de Discord
+MEDALLAS   = ['🥇', '🥈', '🥉']
+SEPARADOR  = '━━━━━━━━━━━━━━━━━━━━━━'
+
+# clave → (etiqueta del tablón, nombre del rol a mencionar)
+TROPAS = {
+    'infanteria': ('🗡️ Infantería / Infantry', '🗡️ Infantería'),
+    'caballeria': ('🐴 Caballería / Cavalry',   '🐴 Caballería'),
+    'arqueros':   ('🏹 Arqueros / Archers',     '🏹 Arqueros'),
+    'maquinaria': ('⚙️ Maquinaria / Siege',     '⚙️ Maquinaria'),
+    'mixto':      ('🔱 Mixto / Mixed',          '🔱 Mixto'),
+    'todas':      ('🌐 Todas / All troops',     None),
+}
+
+# Rangos de cabezas doradas: clave → (etiqueta, valor numérico guardado, texto que se muestra).
+# Las cabezas son solo informativas para el liderazgo: no influyen en la asignación de plazas.
+RANGOS_CABEZAS = {
+    'r0':    ('0 — solo voy a por puntos / just for points', 0,    '0'),
+    'r1':    ('1 – 100',                                     50,   '1–100'),
+    'r100':  ('100 – 300',                                   200,  '100–300'),
+    'r300':  ('300 – 600',                                   450,  '300–600'),
+    'r600':  ('600 – 1000',                                  800,  '600–1000'),
+    'r1000': ('+1000',                                       1000, '+1000'),
+}
+
+
+def txt_cabezas(ins) -> str:
+    return ins['cabezas_txt'] or str(ins['cabezas'] or 0)
+
+
+def medalla(posicion: int) -> str:
+    return MEDALLAS[posicion - 1] if posicion <= 3 else f'`#{posicion}`'
+
+
+def es_externo(user_id: str) -> bool:
+    return user_id.startswith('ext_')
+
+
+def buscar_canal(guild: discord.Guild, fragmento: str, excluir: tuple = ()):
+    return next(
+        (c for c in guild.text_channels
+         if fragmento in c.name and not any(x in c.name for x in excluir)),
+        None,
+    )
+
+
+# ── Tablón ─────────────────────────────────────────────────────────────────────
+
+async def construir_tablon(ev) -> discord.Embed:
+    inscritos = await db.mge_get_inscritos(int(ev['id']))
+    selec     = await db.mge_get_seleccionados(int(ev['id']))
+    por_user  = {i['user_id']: i for i in inscritos}
+    asignados = {s['user_id'] for s in selec}
+    abierta   = ev['activo'] and ev['inscripcion_abierta']
+
+    if not ev['activo']:
+        estado, color = '🏁 **Finalizado / Finished**', 0x95A5A6
+    elif abierta:
+        estado, color = '🟢 **Inscripciones abiertas / Enrollment open**', 0xFFD700
+    else:
+        estado, color = '🔒 **Inscripciones cerradas / Enrollment closed**', 0xE67E22
+
+    cabecera = [
+        f'*{ALIANZA_FULL} · Reino {REINO}*',
+        estado,
+        f'🎯 Meta / Target: **{fmt_poder(ev["poder_min"])}** · '
+        f'👥 Plazas / Slots: **{ev["max_plazas"]}** · {TROPAS.get(ev["tropa"], TROPAS["todas"])[0]}',
+    ]
+    if abierta and ev['cierre_ts']:
+        cierre = int(ev['cierre_ts'])
+        cabecera.append(f'⏰ Cierre / Closes: <t:{cierre}:R> · <t:{cierre}:f>')
+    if ev['descripcion']:
+        cabecera.append(f'_{ev["descripcion"]}_')
+
+    # Plazas asignadas, con los huecos libres a la vista
+    ocupadas = {s['posicion']: s for s in selec}
+    lineas_plazas = [f'🏆 **PLAZAS / SLOTS ({len(selec)}/{ev["max_plazas"]})**']
+    for pos in range(1, ev['max_plazas'] + 1):
+        s = ocupadas.get(pos)
+        if not s:
+            lineas_plazas.append(f'{medalla(pos)} ⬜ _libre / open_')
+            continue
+        ins   = por_user.get(s['user_id'])
+        linea = f'{medalla(pos)} **{s["gobernador"]}**'
+        if ins:
+            linea += f' · 🗿 {txt_cabezas(ins)}'
+        if s['poder'] != ev['poder_min']:
+            linea += f' · 🎯 {fmt_poder(s["poder"])}'
+        lineas_plazas.append(linea)
+
+    # Lista de espera por orden de inscripción
+    espera = [i for i in inscritos if i['user_id'] not in asignados]
+    lineas_espera = [f'📝 **EN ESPERA / WAITING ({len(espera)})**']
+    if not espera:
+        lineas_espera.append(
+            '_¡Pulsa ✋ para apuntarte! / Press ✋ to sign up!_' if abierta else '_Nadie en espera. / Nobody waiting._'
+        )
+
+    descripcion = '\n'.join(cabecera) + f'\n{SEPARADOR}\n' + '\n'.join(lineas_plazas) + f'\n{SEPARADOR}\n' + '\n'.join(lineas_espera)
+    for n, i in enumerate(espera):
+        linea = f'\n`{n + 1:>2}.` **{i["gobernador"]}** · 🗿 {txt_cabezas(i)}'
+        if i['poder']:
+            linea += f' · {fmt_poder(i["poder"])}'
+        if es_externo(i['user_id']):
+            linea += ' · _ext_'
+        resto = f'\n_… y {len(espera) - n} más / and {len(espera) - n} more_'
+        if len(descripcion) + len(linea) + len(resto) > 4000:
+            descripcion += resto
+            break
+        descripcion += linea
+
+    embed = discord.Embed(title=f'🔥 {ev["nombre"]}', description=descripcion, color=color)
+    if ev['activo']:
+        embed.set_footer(text=(
+            '✋ Apuntarse · 🗿 Cambiar cabezas · 🚪 Salir · ⚙️ Liderazgo\n'
+            f'✋ Sign up · 🗿 Change heads · 🚪 Leave · MGE #{ev["id"]} · {ALIANZA_TAG}'
+        ))
+    else:
+        embed.set_footer(text=f'MGE #{ev["id"]} · {ALIANZA_TAG} · Reino {REINO}')
+    return embed
+
+
+async def refrescar_tablon(client: discord.Client, evento_id: int):
+    """Vuelve a pintar el tablón del MGE con los datos actuales de la BD."""
+    ev = await db.mge_get_evento(evento_id)
+    if not ev or not ev['canal_id'] or not ev['mensaje_id']:
+        return
+    canal = client.get_channel(int(ev['canal_id']))
+    if not canal:
+        return
+    vista = TablonView(abierta=bool(ev['inscripcion_abierta'])) if ev['activo'] else None
+    try:
+        await canal.get_partial_message(int(ev['mensaje_id'])).edit(embed=await construir_tablon(ev), view=vista)
+    except discord.HTTPException as e:
+        print(f'[mge] No se pudo actualizar el tablón del MGE #{evento_id}: {e}')
+
+
+async def publicar_tablon(canal: discord.TextChannel, evento_id: int) -> discord.Message:
+    ev  = await db.mge_get_evento(evento_id)
+    msg = await canal.send(embed=await construir_tablon(ev), view=TablonView(abierta=bool(ev['inscripcion_abierta'])))
+    await db.mge_set_tablon(evento_id, str(canal.id), str(msg.id))
+    return msg
+
+
+# ── Inscripción con cabezas ────────────────────────────────────────────────────
+
+async def guardar_inscripcion(interaction: discord.Interaction, evento_id: int,
+                              cabezas: int, cabezas_txt: str) -> str:
+    """Inscribe (o actualiza) al usuario que pulsa y devuelve el mensaje de confirmación."""
+    ev = await db.mge_get_evento(evento_id)
+    if not ev or not ev['activo'] or not ev['inscripcion_abierta']:
+        return '🔒 Las inscripciones de este MGE están cerradas. / Enrollment for this MGE is closed.'
+
+    miembro    = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
+    gobernador = miembro['gobernador'] if miembro else interaction.user.display_name
+    poder      = miembro['poder'] if miembro else 0
+
+    nueva = await db.mge_inscribir(evento_id, str(interaction.guild_id), str(interaction.user.id),
+                                   gobernador, poder, cabezas, cabezas_txt)
+    await refrescar_tablon(interaction.client, evento_id)
+
+    mostrar = cabezas_txt or str(cabezas)
+    if nueva:
+        texto = (f'✅ ¡Apuntado a **{ev["nombre"]}** con 🗿 **{mostrar}** cabezas doradas!\n'
+                 f'_Signed up for **{ev["nombre"]}** with 🗿 **{mostrar}** golden heads!_')
+    else:
+        texto = f'✅ Cabezas actualizadas: 🗿 **{mostrar}** / _Heads updated_'
+    if not miembro:
+        texto += ('\n\nℹ️ No tienes perfil: apareces como **' + gobernador + '**. Usa `/registrar` para salir con tu '
+                  'nombre de gobernador y tu poder. / _No profile yet: use `/registrar` to show your governor name._')
+    return texto
+
+
+class CabezasModal(discord.ui.Modal, title='🗿 Cabezas doradas / Golden heads'):
+    cantidad = discord.ui.TextInput(label='¿Cuántas tienes? / How many?', placeholder='Ej: 420', max_length=6)
+
+    def __init__(self, evento_id: int):
+        super().__init__()
+        self.evento_id = evento_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        valor = self.cantidad.value.strip().replace('.', '')
+        if not valor.isdigit():
+            await interaction.response.send_message('❌ Escribe solo un número. / Numbers only.', ephemeral=True)
+            return
+        texto = await guardar_inscripcion(interaction, self.evento_id, int(valor), '')
+        await interaction.response.edit_message(content=texto, view=None)
+
+
+class CabezasView(discord.ui.View):
+    """Selector privado de cabezas doradas que aparece al pulsar ✋ o 🗿."""
+
+    def __init__(self, evento_id: int):
+        super().__init__(timeout=300)
+        self.evento_id = evento_id
+        opciones = [discord.SelectOption(label=etiqueta, value=clave, emoji='🗿')
+                    for clave, (etiqueta, _, _) in RANGOS_CABEZAS.items()]
+        opciones.append(discord.SelectOption(label='Escribir número exacto / Exact number', value='exacto', emoji='✏️'))
+        selector = discord.ui.Select(placeholder='🗿 ¿Cuántas cabezas doradas tienes? / Golden heads?', options=opciones)
+        selector.callback = self._elegido
+        self.add_item(selector)
+
+    async def _elegido(self, interaction: discord.Interaction):
+        clave = interaction.data['values'][0]
+        if clave == 'exacto':
+            await interaction.response.send_modal(CabezasModal(self.evento_id))
+            return
+        _, valor, texto = RANGOS_CABEZAS[clave]
+        mensaje = await guardar_inscripcion(interaction, self.evento_id, valor, texto)
+        await interaction.response.edit_message(content=mensaje, view=None)
+
+
+# ── Vista persistente del tablón ───────────────────────────────────────────────
+
+class TablonView(discord.ui.View):
+    def __init__(self, abierta: bool = True):
+        super().__init__(timeout=None)
+        self.apuntar.disabled = not abierta
+        self.cabezas.disabled = not abierta
+
+    async def _evento(self, interaction: discord.Interaction):
+        ev = await db.mge_get_evento_por_mensaje(str(interaction.message.id))
+        if not ev or not ev['activo']:
+            await interaction.response.send_message('❌ Este MGE ya no está activo. / This MGE is no longer active.', ephemeral=True)
+            return None
+        return ev
+
+    async def _abrir_selector(self, interaction: discord.Interaction, ev, texto: str):
+        if not ev['inscripcion_abierta']:
+            await interaction.response.send_message('🔒 Las inscripciones están cerradas. / Enrollment is closed.', ephemeral=True)
+            return
+        await interaction.response.send_message(texto, view=CabezasView(int(ev['id'])), ephemeral=True)
+
+    @discord.ui.button(label='Apuntarme', emoji='✋', style=discord.ButtonStyle.success, custom_id='mge:apuntar')
+    async def apuntar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ev = await self._evento(interaction)
+        if not ev:
+            return
+        ins = await db.mge_get_inscripcion(int(ev['id']), str(interaction.user.id))
+        if ins:
+            await interaction.response.send_message(
+                f'ℹ️ Ya estás apuntado con 🗿 **{txt_cabezas(ins)}**. Usa 🗿 para cambiarlas.\n'
+                f'_Already signed up. Use 🗿 to change your heads._',
+                ephemeral=True,
+            )
+            return
+        await self._abrir_selector(interaction, ev, f'**{ev["nombre"]}** — elige tus cabezas doradas / _pick your golden heads_')
+
+    @discord.ui.button(label='Mis cabezas', emoji='🗿', style=discord.ButtonStyle.primary, custom_id='mge:cabezas')
+    async def cabezas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ev = await self._evento(interaction)
+        if not ev:
+            return
+        ins = await db.mge_get_inscripcion(int(ev['id']), str(interaction.user.id))
+        texto = (f'Ahora tienes 🗿 **{txt_cabezas(ins)}**. Elige el nuevo valor / _Pick the new value_'
+                 if ins else f'**{ev["nombre"]}** — elige tus cabezas doradas / _pick your golden heads_')
+        await self._abrir_selector(interaction, ev, texto)
+
+    @discord.ui.button(label='Salir', emoji='🚪', style=discord.ButtonStyle.secondary, custom_id='mge:salir')
+    async def salir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ev = await self._evento(interaction)
+        if not ev:
+            return
+        selec   = await db.mge_get_seleccionados(int(ev['id']))
+        tenia   = any(s['user_id'] == str(interaction.user.id) for s in selec)
+        ok      = await db.mge_cancelar_inscripcion(int(ev['id']), str(interaction.user.id))
+        if not ok:
+            await interaction.response.send_message('ℹ️ No estabas apuntado. / You were not signed up.', ephemeral=True)
+            return
+        await refrescar_tablon(interaction.client, int(ev['id']))
+        aviso = '\n⚠️ Has dejado libre tu plaza. / _You gave up your slot._' if tenia else ''
+        await interaction.response.send_message(
+            f'🚪 Te has borrado de **{ev["nombre"]}**. / _You left **{ev["nombre"]}**._{aviso}', ephemeral=True
+        )
+
+    @discord.ui.button(label='Gestionar', emoji='⚙️', style=discord.ButtonStyle.secondary, custom_id='mge:gestionar')
+    async def gestionar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message('❌ Solo el liderazgo. / Leadership only.', ephemeral=True)
+            return
+        ev = await self._evento(interaction)
+        if not ev:
+            return
+        panel = PanelAdmin(int(ev['id']))
+        await panel.recargar()
+        await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+
+
+# ── Panel de administración (privado) ──────────────────────────────────────────
+
+class MetaModal(discord.ui.Modal, title='🎯 Meta individual / Individual target'):
+    meta = discord.ui.TextInput(label='Meta de poder / Power target', placeholder='Ej: 60M, 45000K', max_length=20)
+
+    def __init__(self, panel: 'PanelAdmin', user_id: str):
+        super().__init__()
+        self.panel   = panel
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        meta = parse_poder(self.meta.value)
+        if meta < 0:
+            await interaction.response.send_message('❌ Formato: `50M`, `30000K` o `50000000`', ephemeral=True)
+            return
+        await db.mge_set_meta_individual(self.panel.evento_id, self.user_id, meta)
+        await refrescar_tablon(interaction.client, self.panel.evento_id)
+        await self.panel.render(interaction, f'🎯 Meta individual → **{fmt_poder(meta)}**')
+
+
+class ExternoModal(discord.ui.Modal, title='➕ Inscribir externo / External'):
+    gobernador = discord.ui.TextInput(label='Gobernador (sin Discord)', placeholder='Nombre en el juego', max_length=50)
+    cantidad   = discord.ui.TextInput(label='Cabezas doradas / Golden heads', placeholder='Ej: 300', max_length=6)
+
+    def __init__(self, panel: 'PanelAdmin'):
+        super().__init__()
+        self.panel = panel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        valor = self.cantidad.value.strip().replace('.', '')
+        if not valor.isdigit():
+            await interaction.response.send_message('❌ Las cabezas deben ser un número.', ephemeral=True)
+            return
+        nombre  = self.gobernador.value.strip()
+        user_id = 'ext_' + nombre.lower().replace(' ', '_')
+        miembro = await db.get_member(str(interaction.guild_id), user_id)
+        poder   = miembro['poder'] if miembro else 0
+        await db.mge_inscribir(self.panel.evento_id, str(interaction.guild_id), user_id, nombre, poder, int(valor), '')
+        await refrescar_tablon(interaction.client, self.panel.evento_id)
+        self.panel.seleccionado = user_id
+        await self.panel.render(interaction, f'➕ **{nombre}** _(externo)_ inscrito con 🗿 {valor}')
+
+
+class PanelAdmin(discord.ui.View):
+    """Panel privado para el liderazgo: se elige un gobernador y se actúa sobre él."""
+
+    def __init__(self, evento_id: int):
+        super().__init__(timeout=900)
+        self.evento_id        = evento_id
+        self.seleccionado     = None   # user_id elegido en el desplegable
+        self.confirmar_final  = False
+        self.pagina           = 0      # página de la lista de espera en el asignado rápido
+        self.ev               = None
+        self.inscritos        = []
+        self.selec            = []
+
+    # ── Datos y pintado ────────────────────────────────────────────────────────
+
+    def _plaza_de(self, user_id: str):
+        return next((s for s in self.selec if s['user_id'] == user_id), None)
+
+    async def recargar(self):
+        self.ev        = await db.mge_get_evento(self.evento_id)
+        self.inscritos = await db.mge_get_inscritos(self.evento_id)
+        self.selec     = await db.mge_get_seleccionados(self.evento_id)
+        if self.seleccionado and not any(i['user_id'] == self.seleccionado for i in self.inscritos):
+            self.seleccionado = None
+        self._montar()
+
+    def _espera(self) -> list:
+        asignados = {s['user_id'] for s in self.selec}
+        return [i for i in self.inscritos if i['user_id'] not in asignados]
+
+    def _siguiente_libre(self):
+        ocupadas = {s['posicion'] for s in self.selec}
+        return next((p for p in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1) if p not in ocupadas), None)
+
+    def _montar(self):
+        self.clear_items()
+        activo = bool(self.ev['activo'])
+
+        # Fila 0: marcar de golpe a los que entran (selección múltiple sobre la lista de espera)
+        espera    = self._espera()
+        siguiente = self._siguiente_libre()
+        libres    = min(self.ev['max_plazas'], MAX_PLAZAS) - len(self.selec)
+        if activo and siguiente and espera:
+            if self.pagina * 25 >= len(espera):
+                self.pagina = 0
+            trozo    = espera[self.pagina * 25:(self.pagina + 1) * 25]
+            opciones = []
+            for n, i in enumerate(trozo, self.pagina * 25 + 1):
+                desc = f'🗿 {txt_cabezas(i)}' + (f' · {fmt_poder(i["poder"])}' if i['poder'] else '')
+                opciones.append(discord.SelectOption(label=f'{n}. {i["gobernador"]}'[:100], value=i['user_id'],
+                                                     description=desc[:100]))
+            sel_rapido = discord.ui.Select(
+                placeholder=f'✅ Marca a los que entran (hasta {libres}) / Tick who gets in',
+                options=opciones, row=0, min_values=1, max_values=min(libres, len(opciones)),
+            )
+        else:
+            texto = ('✅ Todas las plazas cubiertas / All slots filled' if not siguiente
+                     else 'Nadie en lista de espera / Nobody waiting')
+            sel_rapido = discord.ui.Select(placeholder=texto, row=0, disabled=True,
+                                           options=[discord.SelectOption(label='—', value='none')])
+        sel_rapido.callback = self._asignar_rapido
+        self.add_item(sel_rapido)
+
+        # Fila 1: retocar a un gobernador (primero los que tienen plaza, por orden de plaza)
+        con_plaza_ids = [s['user_id'] for s in self.selec]
+        por_user      = {i['user_id']: i for i in self.inscritos}
+        orden         = [por_user[u] for u in con_plaza_ids if u in por_user] + espera
+        if orden:
+            opciones = []
+            for i in orden[:25]:
+                plaza = self._plaza_de(i['user_id'])
+                desc  = f'🗿 {txt_cabezas(i)}' + (f' · plaza #{plaza["posicion"]}' if plaza else ' · en espera')
+                opciones.append(discord.SelectOption(
+                    label=i['gobernador'][:100], value=i['user_id'], description=desc[:100],
+                    emoji='🏆' if plaza else '📝', default=i['user_id'] == self.seleccionado,
+                ))
+            sel_gob = discord.ui.Select(placeholder='✏️ Retocar: elige un gobernador / Edit a governor',
+                                        options=opciones, row=1, disabled=not activo)
+        else:
+            sel_gob = discord.ui.Select(placeholder='Nadie inscrito todavía / Nobody yet', row=1, disabled=True,
+                                        options=[discord.SelectOption(label='—', value='none')])
+        sel_gob.callback = self._elegir_gobernador
+        self.add_item(sel_gob)
+
+        # Fila 2: mover al gobernador elegido a otra plaza (si está ocupada, se intercambian)
+        ocupadas = {s['posicion']: s for s in self.selec}
+        actual   = self._plaza_de(self.seleccionado) if self.seleccionado else None
+        opciones = []
+        for pos in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1):
+            ocupante = ocupadas.get(pos)
+            opciones.append(discord.SelectOption(
+                label=f'#{pos} · {ocupante["gobernador"] if ocupante else "libre / open"}'[:100],
+                value=str(pos),
+                emoji=MEDALLAS[pos - 1] if pos <= 3 else ('🔸' if ocupante else '⬜'),
+                default=bool(actual and actual['posicion'] == pos),
+            ))
+        sel_pos = discord.ui.Select(placeholder='↕️ Mover a la plaza… / Move to slot…', options=opciones, row=2,
+                                    disabled=not (activo and self.seleccionado))
+        sel_pos.callback = self._asignar_posicion
+        self.add_item(sel_pos)
+
+        # Fila 3: acciones
+        con_plaza = bool(activo and actual)
+        abierta   = bool(self.ev['inscripcion_abierta'])
+        self._boton('Meta', '🎯', discord.ButtonStyle.primary, 3, self._meta, not con_plaza)
+        self._boton('Quitar', '❌', discord.ButtonStyle.danger, 3, self._quitar, not con_plaza)
+        self._boton('Vaciar plazas', '🧹', discord.ButtonStyle.secondary, 3, self._vaciar, not (activo and self.selec))
+        self._boton('Externo', '➕', discord.ButtonStyle.secondary, 3, self._externo, not activo)
+        self._boton('Cerrar inscr.' if abierta else 'Reabrir inscr.',
+                    '🔒' if abierta else '🔓', discord.ButtonStyle.secondary, 3, self._abrir_cerrar, not activo)
+
+        # Fila 4: publicar, finalizar y paginar la lista de espera si hay más de 25
+        self._boton('Publicar lista final', '📢', discord.ButtonStyle.success, 4, self._publicar,
+                    not (activo and self.selec))
+        self._boton('¿Seguro? Pulsa otra vez' if self.confirmar_final else 'Finalizar MGE',
+                    '⚠️' if self.confirmar_final else '🏁', discord.ButtonStyle.danger, 4, self._finalizar, not activo)
+        if activo and siguiente and len(espera) > 25:
+            self._boton('Siguientes 25', '➡️', discord.ButtonStyle.secondary, 4, self._pagina)
+
+    def _boton(self, label, emoji, style, row, callback, disabled=False):
+        boton = discord.ui.Button(label=label, emoji=emoji, style=style, row=row, disabled=disabled)
+        boton.callback = callback
+        self.add_item(boton)
+
+    def _lista(self) -> str:
+        """Lista numerada de todos los inscritos con su estado."""
+        if not self.inscritos:
+            return '\n\n_Nadie inscrito todavía._'
+        texto = f'\n\n📋 **Inscritos / Signed up ({len(self.inscritos)})**'
+        for n, i in enumerate(self.inscritos, 1):
+            plaza = self._plaza_de(i['user_id'])
+            linea = f'\n`{n:>2}.` {medalla(plaza["posicion"]) if plaza else "📝"} **{i["gobernador"]}** · 🗿 {txt_cabezas(i)}'
+            if i['poder']:
+                linea += f' · {fmt_poder(i["poder"])}'
+            if len(texto) + len(linea) > 3500:
+                return texto + f'\n_… y {len(self.inscritos) - n + 1} más_'
+            texto += linea
+        return texto
+
+    def embed(self, aviso: str = '') -> discord.Embed:
+        ev    = self.ev
+        libre = ev['max_plazas'] - len(self.selec)
+        e = discord.Embed(
+            title=f'⚙️ Gestión — {ev["nombre"]}',
+            description=(
+                f'👥 **{len(self.inscritos)}** inscritos · 🏆 **{len(self.selec)}/{ev["max_plazas"]}** plazas '
+                f'({libre} libres) · {"🟢 abiertas" if ev["inscripcion_abierta"] else "🔒 cerradas"}'
+                + self._lista()
+            ),
+            color=0x2F3136,
+        )
+        if self.seleccionado:
+            ins   = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
+            plaza = self._plaza_de(self.seleccionado)
+            info  = f'🗿 {txt_cabezas(ins)}'
+            if ins['poder']:
+                info += f' · 💪 {fmt_poder(ins["poder"])}'
+            info += (f'\n🏆 Plaza **#{plaza["posicion"]}** · 🎯 {fmt_poder(plaza["poder"])}'
+                     if plaza else '\n📝 En espera / waiting')
+            e.add_field(name=f'Seleccionado: {ins["gobernador"]}', value=info, inline=False)
+        else:
+            e.add_field(name='Cómo se usa', value=(
+                '✅ **Elegir el top:** en el primer desplegable marca a todos los que entran de una vez; '
+                'ocupan las plazas libres en el orden de la lista.\n'
+                '✏️ **Retocar:** elige un gobernador y muévelo; si la plaza está ocupada, **se intercambian**.\n'
+                '📢 Cuando esté bien, *Publicar lista final*.'
+            ), inline=False)
+        if len(self._espera()) > 25:
+            e.add_field(name='ℹ️', value='Más de 25 en espera: usa ➡️ *Siguientes 25* para ver el resto en el desplegable.', inline=False)
+        if aviso:
+            e.add_field(name='Última acción', value=aviso, inline=False)
+        return e
+
+    async def render(self, interaction: discord.Interaction, aviso: str = ''):
+        await self.recargar()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=self.embed(aviso), view=self)
+        else:
+            await interaction.response.edit_message(embed=self.embed(aviso), view=self)
+
+    # ── Callbacks ──────────────────────────────────────────────────────────────
+
+    async def _elegir_gobernador(self, interaction: discord.Interaction):
+        self.seleccionado    = interaction.data['values'][0]
+        self.confirmar_final = False
+        await self.render(interaction)
+
+    async def _asignar_posicion(self, interaction: discord.Interaction):
+        pos      = int(interaction.data['values'][0])
+        ins      = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
+        actual   = self._plaza_de(self.seleccionado)
+        ocupante = next((s for s in self.selec if s['posicion'] == pos and s['user_id'] != self.seleccionado), None)
+        meta     = actual['poder'] if actual else self.ev['poder_min']
+        await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), self.seleccionado,
+                                 ins['gobernador'], meta, pos)
+        aviso = f'{medalla(pos)} **{ins["gobernador"]}** → plaza #{pos}'
+        if ocupante and actual:
+            # Intercambio: el que estaba en esa plaza pasa a la antigua del elegido
+            await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), ocupante['user_id'],
+                                     ocupante['gobernador'], ocupante['poder'], actual['posicion'])
+            aviso += f'\n🔁 **{ocupante["gobernador"]}** pasa a la plaza #{actual["posicion"]}'
+        elif ocupante:
+            aviso += f'\n↩️ **{ocupante["gobernador"]}** vuelve a la lista de espera'
+        await refrescar_tablon(interaction.client, self.evento_id)
+        await self.render(interaction, aviso)
+
+    async def _meta(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(MetaModal(self, self.seleccionado))
+
+    async def _quitar(self, interaction: discord.Interaction):
+        ins = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
+        await db.mge_quitar_seleccion(self.evento_id, self.seleccionado)
+        await refrescar_tablon(interaction.client, self.evento_id)
+        await self.render(interaction, f'❌ **{ins["gobernador"]}** vuelve a la lista de espera')
+
+    async def _asignar_rapido(self, interaction: discord.Interaction):
+        marcados = set(interaction.data['values'])
+        # Se colocan en las plazas libres respetando el orden de la lista
+        elegidos = [i for i in self._espera() if i['user_id'] in marcados]
+        ocupadas = {s['posicion'] for s in self.selec}
+        libres   = [p for p in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1) if p not in ocupadas]
+        lineas   = []
+        for pos, ins in zip(libres, elegidos):
+            await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), ins['user_id'],
+                                     ins['gobernador'], self.ev['poder_min'], pos)
+            lineas.append(f'{medalla(pos)} {ins["gobernador"]}')
+        await refrescar_tablon(interaction.client, self.evento_id)
+        aviso = '✅ Asignados: ' + ' · '.join(lineas) if lineas else '⚠️ No quedaban plazas libres.'
+        await self.render(interaction, aviso[:1024])
+
+    async def _pagina(self, interaction: discord.Interaction):
+        self.pagina += 1
+        await self.render(interaction)
+
+    async def _vaciar(self, interaction: discord.Interaction):
+        n = await db.mge_vaciar_seleccion(self.evento_id)
+        await refrescar_tablon(interaction.client, self.evento_id)
+        await self.render(interaction, f'🧹 {n} plazas vaciadas; todos vuelven a la lista de espera.')
+
+    async def _externo(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ExternoModal(self))
+
+    async def _abrir_cerrar(self, interaction: discord.Interaction):
+        abrir = not self.ev['inscripcion_abierta']
+        await db.mge_set_inscripcion_abierta(self.evento_id, abrir)
+        await refrescar_tablon(interaction.client, self.evento_id)
+        await self.render(interaction, '🔓 Inscripciones reabiertas' if abrir else '🔒 Inscripciones cerradas')
+
+    async def _publicar(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        ev = self.ev
+        lineas = [f'{medalla(s["posicion"])} **{s["gobernador"]}** — 🎯 **{fmt_poder(s["poder"])}**' for s in self.selec]
+        embed = discord.Embed(
+            title=f'🏆 Participantes / Participants — {ev["nombre"]}',
+            description=(
+                f'**{ALIANZA_FULL} · Reino {REINO}**\n\n'
+                f'¡Estos son los **{len(self.selec)}** seleccionados y sus metas!\n'
+                f'_These are the **{len(self.selec)}** selected participants and their targets!_\n\n'
+                + '\n'.join(lineas)
+            ),
+            color=0xFFD700,
+        )
+        embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
+        menciones = ' '.join(f'<@{s["user_id"]}>' for s in self.selec if not es_externo(s['user_id']))
+
+        guild  = interaction.guild
+        canal  = None
+        canal_id = await db.get_config(str(guild.id), 'mge_canal_resultados')
+        if canal_id:
+            canal = guild.get_channel(int(canal_id))
+        canal = canal or buscar_canal(guild, 'mge-resultados') or interaction.channel
+        await canal.send(content=menciones or None, embed=embed)
+
+        # Aviso por MD a cada seleccionado con su plaza y su meta
+        enviados = 0
+        for s in self.selec:
+            if es_externo(s['user_id']):
+                continue
+            miembro = guild.get_member(int(s['user_id']))
+            if not miembro:
+                continue
+            try:
+                await miembro.send(
+                    f'🏆 **{ev["nombre"]}** · {ALIANZA_TAG}\n'
+                    f'Tienes la plaza {medalla(s["posicion"])} con meta 🎯 **{fmt_poder(s["poder"])}**. ¡A por ello! 🔥\n'
+                    f'_You got slot #{s["posicion"]} with a **{fmt_poder(s["poder"])}** target. Go for it!_'
+                )
+                enviados += 1
+            except discord.HTTPException:
+                pass
+        await self.render(interaction, f'📢 Lista publicada en {canal.mention} · {enviados} MD enviados')
+
+    async def _finalizar(self, interaction: discord.Interaction):
+        if not self.confirmar_final:
+            self.confirmar_final = True
+            await self.render(interaction, '⚠️ Al finalizar, el tablón se congela y pasa al historial. Pulsa otra vez para confirmar.')
+            return
+        await db.mge_set_inscripcion_abierta(self.evento_id, False)
+        await db.mge_cerrar_evento(str(interaction.guild_id), self.evento_id)
+        await refrescar_tablon(interaction.client, self.evento_id)
+        await self.render(interaction, '🏁 MGE finalizado. Ya aparece en `/mge-historial`.')
+        self.stop()
+
+
+# ── Creación ───────────────────────────────────────────────────────────────────
+
+class CrearModal(discord.ui.Modal, title='🔥 Nuevo MGE'):
+    nombre = discord.ui.TextInput(label='Nombre', placeholder='Ej: MGE Caballería', max_length=60)
+    meta   = discord.ui.TextInput(label='Meta de poder', placeholder='Ej: 50M, 30000K', max_length=20)
+    plazas = discord.ui.TextInput(label=f'Plazas (1-{MAX_PLAZAS})', default='10', max_length=2)
+    horas  = discord.ui.TextInput(label='Cierre de inscripciones en X horas (opcional)',
+                                  placeholder='Ej: 48 · vacío = lo cierras tú a mano', max_length=4, required=False)
+    descripcion = discord.ui.TextInput(label='Descripción (opcional)', style=discord.TextStyle.paragraph,
+                                       max_length=300, required=False)
+
+    def __init__(self, tropa: str, anunciar: bool):
+        super().__init__()
+        self.tropa    = tropa
+        self.anunciar = anunciar
+
+    async def on_submit(self, interaction: discord.Interaction):
+        meta = parse_poder(self.meta.value)
+        if meta < 0:
+            await interaction.response.send_message('❌ Meta incorrecta. Usa `50M`, `30000K` o `50000000`.', ephemeral=True)
+            return
+        if not self.plazas.value.strip().isdigit() or not 1 <= int(self.plazas.value) <= MAX_PLAZAS:
+            await interaction.response.send_message(f'❌ Las plazas deben ser un número entre 1 y {MAX_PLAZAS}.', ephemeral=True)
+            return
+        horas = self.horas.value.strip()
+        if horas and not horas.isdigit():
+            await interaction.response.send_message('❌ Las horas de cierre deben ser un número (o déjalo vacío).', ephemeral=True)
+            return
+        cierre_ts = int(time.time()) + int(horas) * 3600 if horas else 0
+
+        await interaction.response.defer(ephemeral=True)
+        guild     = interaction.guild
+        evento_id = await db.mge_crear_evento(str(guild.id), self.nombre.value.strip(), meta, int(self.plazas.value),
+                                              self.descripcion.value.strip(), self.tropa, cierre_ts)
+
+        config = await db.get_canal_config(str(guild.id), 'mge-inscripciones')
+        canal  = guild.get_channel(int(config['canal_id'])) if config else None
+        canal  = canal or buscar_canal(guild, 'mge-inscripciones') or interaction.channel
+        tablon = await publicar_tablon(canal, evento_id)
+
+        respuesta = f'✅ MGE creado y tablón publicado: {tablon.jump_url}\nGestiónalo con el botón ⚙️ del tablón.'
+        if self.anunciar:
+            anuncios = buscar_canal(guild, 'anuncios', excluir=('kvk', 'ark'))
+            if anuncios:
+                rol_nombre = TROPAS.get(self.tropa, TROPAS['todas'])[1]
+                rol        = discord.utils.get(guild.roles, name=rol_nombre) if rol_nombre else None
+                embed = discord.Embed(
+                    title=f'🔥 {self.nombre.value.strip()} — ¡Inscripciones abiertas! / Enrollment open!',
+                    description=(
+                        f'🎯 Meta / Target: **{fmt_poder(meta)}** · 👥 **{self.plazas.value}** plazas / slots · '
+                        f'{TROPAS.get(self.tropa, TROPAS["todas"])[0]}\n'
+                        + (f'⏰ Cierre / Closes: <t:{cierre_ts}:R>\n' if cierre_ts else '')
+                        + f'\n👉 **[Apúntate aquí con un clic / Sign up here with one click]({tablon.jump_url})**'
+                    ),
+                    color=0xFFD700,
+                )
+                embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
+                await anuncios.send(content=rol.mention if rol else None, embed=embed)
+                respuesta += f'\n📢 Anunciado en {anuncios.mention}.'
+            else:
+                respuesta += '\n⚠️ No encontré canal de anuncios; no se ha anunciado.'
+        await interaction.followup.send(respuesta, ephemeral=True)
+
+
+# ── Cog ────────────────────────────────────────────────────────────────────────
+
 class Mge(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        self.bot.add_view(TablonView())
+        self.autocierre.start()
+
+    async def cog_unload(self):
+        self.autocierre.cancel()
+
+    # ── Cierre automático de inscripciones ─────────────────────────────────────
+
+    @tasks.loop(minutes=1)
+    async def autocierre(self):
+        for ev in await db.mge_get_pendientes_autocierre(int(time.time())):
+            await db.mge_set_inscripcion_abierta(int(ev['id']), False)
+            await refrescar_tablon(self.bot, int(ev['id']))
+            canal = self.bot.get_channel(int(ev['canal_id'])) if ev['canal_id'] else None
+            if canal:
+                try:
+                    await canal.send(
+                        f'🔒 Inscripciones de **{ev["nombre"]}** cerradas. El liderazgo asignará las plazas.\n'
+                        f'_Enrollment for **{ev["nombre"]}** is closed. Leadership will assign the slots._'
+                    )
+                except discord.HTTPException:
+                    pass
+
+    @autocierre.before_loop
+    async def antes_autocierre(self):
+        await self.bot.wait_until_ready()
 
     # ── Autocomplete ───────────────────────────────────────────────────────────
 
     async def _ac_eventos(self, interaction: discord.Interaction, current: str):
         eventos = await db.mge_get_eventos_activos(str(interaction.guild_id))
         return [
-            app_commands.Choice(
-                name=f'{e["nombre"]} — meta {fmt_poder(e["poder_min"])}',
-                value=str(e['id']),
-            )
+            app_commands.Choice(name=f'#{e["id"]} {e["nombre"]} — meta {fmt_poder(e["poder_min"])}', value=str(e['id']))
             for e in eventos
             if current.lower() in e['nombre'].lower()
         ][:25]
 
     # ── /mge-crear ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name='mge-crear', description='[ADMIN] Crea un MGE con meta de poder y número de plazas')
+    @app_commands.command(name='mge-crear', description='[ADMIN] Crea un MGE y publica su tablón de inscripción con botones')
     @app_commands.describe(
-        nombre='Nombre del MGE (ej: MGE Entrenamiento, MGE Investigación...)',
-        meta='Meta de poder a conseguir en el MGE (ej: 50M, 30000K)',
-        plazas='Número de participantes seleccionados (por defecto 10)',
-        descripcion='Detalle adicional sobre el MGE (opcional)',
+        tropa='Tropa a la que va dirigido (se menciona su rol en el anuncio)',
+        anunciar='Publicar también un aviso en #anuncios (por defecto sí)',
     )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_crear(self, interaction: discord.Interaction, nombre: str, meta: str,
-                        plazas: int = 10, descripcion: str = ''):
-        meta_int = parse_poder(meta)
-        if meta_int < 0:
-            await interaction.response.send_message(
-                '❌ Formato incorrecto. Usa: `50M`, `30000K` o `50000000`',
-                ephemeral=True,
-            )
-            return
-        if not 1 <= plazas <= 100:
-            await interaction.response.send_message('❌ El número de plazas debe estar entre 1 y 100.', ephemeral=True)
-            return
-
-        evento_id = await db.mge_crear_evento(str(interaction.guild_id), nombre, meta_int, plazas, descripcion)
-
-        embed = discord.Embed(title='✅ MGE creado / MGE created', color=COLOR_BOT)
-        embed.add_field(name='Nombre / Name',         value=nombre,             inline=True)
-        embed.add_field(name='Meta / Target',          value=fmt_poder(meta_int), inline=True)
-        embed.add_field(name='Plazas / Slots',         value=str(plazas),        inline=True)
-        embed.add_field(name='ID',                     value=f'`#{evento_id}`',  inline=True)
-        if descripcion:
-            embed.add_field(name='Descripción / Description', value=descripcion, inline=False)
-        embed.set_footer(text=f'Inscripciones: /mge-inscribir · Asignación: /mge-asignar · {ALIANZA_TAG}')
-        await interaction.response.send_message(embed=embed)
-
-    # ── /mge-cerrar ────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-cerrar', description='[ADMIN] Cierra un MGE — ya no acepta inscripciones')
-    @app_commands.describe(evento='MGE a cerrar / MGE to close')
-    @app_commands.autocomplete(evento=_ac_eventos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_cerrar(self, interaction: discord.Interaction, evento: str):
-        ok = await db.mge_cerrar_evento(str(interaction.guild_id), int(evento))
-        if ok:
-            await interaction.response.send_message('✅ MGE cerrado / MGE closed.', ephemeral=True)
-        else:
-            await interaction.response.send_message('❌ No encontré ese MGE. / MGE not found.', ephemeral=True)
-
-    # ── /mge-lista ─────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-lista', description='Muestra los MGEs disponibles y su meta de poder / Shows available MGEs and their power target')
-    @solo_en_canal('mge-inscripciones')
-    async def mge_lista(self, interaction: discord.Interaction):
-        eventos = await db.mge_get_eventos_activos(str(interaction.guild_id))
-        if not eventos:
-            await interaction.response.send_message(
-                '📋 No hay MGEs activos ahora mismo. / No active MGEs right now.',
-                ephemeral=True,
-            )
-            return
-
-        embed = discord.Embed(
-            title='📋 MGEs disponibles / Available MGEs',
-            description=(
-                f'*{ALIANZA_TAG} · Reino {REINO}*\n'
-                'Usa `/mge-inscribir` para apuntarte a uno.\n'
-                '_Use `/mge-inscribir` to sign up for one._'
-            ),
-            color=COLOR_BOT,
-        )
-
-        for e in eventos:
-            inscritos = await db.mge_count_inscritos(int(e['id']))
-            selec     = await db.mge_get_seleccionados(int(e['id']))
-
-            valor = (
-                f'🎯 Meta / Target: **{fmt_poder(e["poder_min"])}**\n'
-                f'👥 Inscritos / Enrolled: **{inscritos}** · '
-                f'Plazas / Slots: **{len(selec)}/{e["max_plazas"]}**'
-            )
-            if e['descripcion']:
-                valor += f'\n_{e["descripcion"]}_'
-
-            embed.add_field(name=f'`#{e["id"]}` {e["nombre"]}', value=valor, inline=False)
-
-        embed.set_footer(text='Inscríbete y el liderazgo asignará las plazas / Sign up and leadership will assign slots')
-        await interaction.response.send_message(embed=embed)
-
-    # ── /mge-inscribir ─────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-inscribir', description='Apúntate a un MGE / Sign up for an MGE')
-    @solo_en_canal('mge-inscripciones')
-    @app_commands.describe(
-        evento='MGE al que quieres apuntarte / MGE you want to join',
-        cabezas='Cabezas doradas que tienes disponibles / Golden heads you have available',
-    )
-    @app_commands.autocomplete(evento=_ac_eventos)
-    async def mge_inscribir(self, interaction: discord.Interaction, evento: str, cabezas: int):
-        miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
-        if not miembro:
-            await interaction.response.send_message(
-                '❌ No tienes perfil registrado. Usa `/registrar` primero.\n'
-                '_You have no profile. Use `/registrar` first._',
-                ephemeral=True,
-            )
-            return
-
-        ev = await db.mge_get_evento(int(evento))
-        if not ev or not ev['activo']:
-            await interaction.response.send_message(
-                '❌ Ese MGE no está disponible. / That MGE is not available.', ephemeral=True
-            )
-            return
-
-        ok = await db.mge_inscribir(int(evento), str(interaction.guild_id), str(interaction.user.id),
-                                    miembro['gobernador'], miembro['poder'], cabezas)
-        if not ok:
-            await interaction.response.send_message(
-                f'ℹ️ Ya estás inscrito en **{ev["nombre"]}**.\n_You are already enrolled in **{ev["nombre"]}**._',
-                ephemeral=True,
-            )
-            return
-
-        inscritos = await db.mge_count_inscritos(int(evento))
-        embed = discord.Embed(
-            title='✅ Inscripción registrada / Enrollment confirmed',
-            description=(
-                'El liderazgo revisará las inscripciones y asignará las plazas.\n'
-                '_Leadership will review enrollments and assign slots._'
-            ),
-            color=COLOR_BOT,
-        )
-        embed.add_field(name='MGE',                         value=ev['nombre'],               inline=True)
-        embed.add_field(name='Gobernador / Governor',        value=miembro['gobernador'],      inline=True)
-        embed.add_field(name='👑 Cabezas doradas / Golden heads', value=str(cabezas),          inline=True)
-        embed.add_field(name='🎯 Meta / Target',             value=fmt_poder(ev['poder_min']), inline=True)
-        embed.add_field(name='Inscritos / Enrolled',         value=str(inscritos),             inline=True)
-        embed.set_footer(text=f'Usa /mge-salir para cancelar · Use /mge-salir to cancel · {ALIANZA_TAG}')
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ── /mge-salir ─────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-salir', description='Cancela tu inscripción en un MGE / Cancel your MGE enrollment')
-    @solo_en_canal('mge-inscripciones')
-    @app_commands.describe(evento='MGE del que quieres salir / MGE to leave')
-    @app_commands.autocomplete(evento=_ac_eventos)
-    async def mge_salir(self, interaction: discord.Interaction, evento: str):
-        ev = await db.mge_get_evento(int(evento))
-        ok = await db.mge_cancelar_inscripcion(int(evento), str(interaction.user.id))
-        if not ok:
-            await interaction.response.send_message(
-                'ℹ️ No estás inscrito en ese MGE. / You are not enrolled in that MGE.', ephemeral=True
-            )
-            return
-        nombre = ev['nombre'] if ev else f'MGE #{evento}'
-        await interaction.response.send_message(
-            f'✅ Inscripción en **{nombre}** cancelada. / Enrollment in **{nombre}** cancelled.',
-            ephemeral=True,
-        )
-
-    # ── /mge-inscribir-externo ────────────────────────────────────────────────
-
-    async def _ac_externos(self, interaction: discord.Interaction, current: str):
-        externos = await db.get_miembros_externos(str(interaction.guild_id))
-        return [
-            app_commands.Choice(name=e['gobernador'], value=e['gobernador'])
-            for e in externos
-            if current.lower() in e['gobernador'].lower()
-        ][:25]
-
-    @app_commands.command(name='mge-inscribir-externo', description='[ADMIN] Inscribe a un gobernador externo (sin Discord) en un MGE')
-    @app_commands.describe(
-        evento='MGE al que inscribir / MGE to enroll in',
-        gobernador='Gobernador externo registrado / Registered external governor',
-        cabezas='Cabezas doradas disponibles / Available golden heads',
-    )
-    @app_commands.autocomplete(evento=_ac_eventos, gobernador=_ac_externos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_inscribir_externo(self, interaction: discord.Interaction,
-                                    evento: str, gobernador: str, cabezas: int):
-        ev = await db.mge_get_evento(int(evento))
-        if not ev or not ev['activo']:
-            await interaction.response.send_message('❌ MGE no encontrado o cerrado. / MGE not found or closed.', ephemeral=True)
-            return
-
-        user_id_ext = 'ext_' + gobernador.lower().replace(' ', '_')
-        miembro     = await db.get_member(str(interaction.guild_id), user_id_ext)
-        poder       = miembro['poder'] if miembro else 0
-
-        ok = await db.mge_inscribir(int(evento), str(interaction.guild_id),
-                                    user_id_ext, gobernador, poder, cabezas)
-        if not ok:
-            await interaction.response.send_message(
-                f'ℹ️ **{gobernador}** ya está inscrito en **{ev["nombre"]}**.\n'
-                f'_**{gobernador}** is already enrolled in **{ev["nombre"]}**._',
-                ephemeral=True,
-            )
-            return
-
-        inscritos = await db.mge_count_inscritos(int(evento))
-        await interaction.response.send_message(
-            f'✅ **{gobernador}** _(externo / external)_ inscrito en **{ev["nombre"]}** · '
-            f'👑 {cabezas} cabezas / golden heads · {inscritos} inscritos / enrolled total.',
-            ephemeral=True,
-        )
-
-    # ── /mge-participantes ─────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-participantes', description='[ADMIN] Lista los inscritos en un MGE / Lists enrolled members')
-    @app_commands.describe(evento='MGE a consultar / MGE to check')
-    @app_commands.autocomplete(evento=_ac_eventos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_participantes(self, interaction: discord.Interaction, evento: str):
-        ev        = await db.mge_get_evento(int(evento))
-        inscritos = await db.mge_get_inscritos(int(evento))
-
-        if not ev:
-            await interaction.response.send_message('❌ MGE no encontrado. / MGE not found.', ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=f'👥 Inscritos / Enrolled — {ev["nombre"]}',
-            description=f'🎯 Meta / Target: **{fmt_poder(ev["poder_min"])}** · **{len(inscritos)}** inscritos / enrolled',
-            color=COLOR_BOT,
-        )
-
-        if not inscritos:
-            embed.description += '\n\n_Nadie se ha inscrito todavía. / Nobody has enrolled yet._'
-        else:
-            total_cabezas = sum(ins['cabezas'] or 0 for ins in inscritos)
-            lineas = [
-                f'**{i}.** **{ins["gobernador"]}** — {fmt_poder(ins["poder"])} · 👑 {ins["cabezas"] or 0}'
-                for i, ins in enumerate(inscritos, 1)
-            ]
-            embed.add_field(
-                name='Lista (por poder) / List (by power) · 👑 = cabezas doradas / golden heads',
-                value='\n'.join(lineas[:25]),
-                inline=False,
-            )
-            embed.add_field(name='👑 Total cabezas doradas / Total golden heads', value=str(total_cabezas), inline=True)
-            if len(inscritos) > 25:
-                embed.set_footer(text=f'Mostrando 25 de {len(inscritos)} / Showing 25 of {len(inscritos)} · {ALIANZA_TAG}')
-            else:
-                embed.set_footer(text=f'Usa /mge-asignar para asignar plazas · Use /mge-asignar to assign slots · {ALIANZA_TAG}')
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ── /mge-asignar ───────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-asignar', description='[ADMIN] Asigna una posición y meta individual a un participante / Assign a slot to a participant')
-    @app_commands.describe(
-        evento='MGE al que asignar / MGE to assign',
-        posicion='Posición que ocupa (1 = top 1...) / Position (1 = top 1...)',
-        usuario='Miembro de Discord a asignar / Discord member to assign',
-        gobernador_ext='Gobernador externo (sin Discord) / External governor (no Discord)',
-        meta='Meta de poder individual (vacío = meta del MGE) / Individual power target (empty = MGE target)',
-    )
-    @app_commands.autocomplete(evento=_ac_eventos, gobernador_ext=_ac_externos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_asignar(self, interaction: discord.Interaction, evento: str,
-                          posicion: int, usuario: discord.Member = None,
-                          gobernador_ext: str = None, meta: str = ''):
-        if not usuario and not gobernador_ext:
-            await interaction.response.send_message(
-                '❌ Indica `usuario` (Discord) o `gobernador_ext` (externo).\n'
-                '_Provide `usuario` (Discord) or `gobernador_ext` (external)._',
-                ephemeral=True,
-            )
-            return
-
-        ev = await db.mge_get_evento(int(evento))
-        if not ev or not ev['activo']:
-            await interaction.response.send_message('❌ MGE no encontrado o cerrado. / MGE not found or closed.', ephemeral=True)
-            return
-
-        if not 1 <= posicion <= ev['max_plazas']:
-            await interaction.response.send_message(
-                f'❌ La posición debe estar entre **1** y **{ev["max_plazas"]}**.\n'
-                f'_Position must be between **1** and **{ev["max_plazas"]}**._',
-                ephemeral=True,
-            )
-            return
-
-        if meta:
-            meta_int = parse_poder(meta)
-            if meta_int < 0:
-                await interaction.response.send_message(
-                    '❌ Formato de meta incorrecto. Usa: `50M`, `30000K` o `50000000`', ephemeral=True
-                )
-                return
-        else:
-            meta_int = ev['poder_min']
-
-        if usuario:
-            miembro    = await db.get_member(str(interaction.guild_id), str(usuario.id))
-            gobernador = miembro['gobernador'] if miembro else usuario.display_name
-            user_id    = str(usuario.id)
-        else:
-            gobernador = gobernador_ext
-            user_id    = 'ext_' + gobernador_ext.lower().replace(' ', '_')
-
-        await db.mge_seleccionar(int(evento), str(interaction.guild_id),
-                                 user_id, gobernador, meta_int, posicion)
-
-        seleccionados = await db.mge_get_seleccionados(int(evento))
-        medalla = ['🥇', '🥈', '🥉'][posicion - 1] if posicion <= 3 else f'**#{posicion}**'
-        ext_tag = ' _(externo / external)_' if not usuario else ''
-
-        await interaction.response.send_message(
-            f'✅ {medalla} **{gobernador}**{ext_tag} → posición / slot **{posicion}** · '
-            f'Meta / Target: **{fmt_poder(meta_int)}** · '
-            f'{len(seleccionados)}/{ev["max_plazas"]} plazas / slots cubiertas / filled.',
-            ephemeral=True,
-        )
-
-    # ── /mge-quitar ────────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-quitar', description='[ADMIN] Quita la plaza asignada a un miembro / Remove assigned slot')
-    @app_commands.describe(
-        evento='MGE del que quitar la plaza / MGE to remove slot from',
-        usuario='Miembro al que quitar la plaza / Member to remove slot from',
-    )
-    @app_commands.autocomplete(evento=_ac_eventos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_quitar(self, interaction: discord.Interaction, evento: str, usuario: discord.Member):
-        ok = await db.mge_quitar_seleccion(int(evento), str(usuario.id))
-        if not ok:
-            await interaction.response.send_message(
-                f'ℹ️ {usuario.display_name} no tiene plaza asignada. / {usuario.display_name} has no assigned slot.',
-                ephemeral=True,
-            )
-            return
-        seleccionados = await db.mge_get_seleccionados(int(evento))
-        ev = await db.mge_get_evento(int(evento))
-        await interaction.response.send_message(
-            f'✅ Plaza de / Slot for **{usuario.display_name}** retirada / removed — '
-            f'**{len(seleccionados)}/{ev["max_plazas"]}** plazas / slots cubiertas / filled.',
-            ephemeral=True,
-        )
-
-    # ── /mge-seleccionados ─────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-seleccionados', description='Muestra los participantes seleccionados y su meta / Selected participants and their target')
-    @solo_en_canal('mge-resultados')
-    @app_commands.describe(evento='MGE a consultar / MGE to check')
-    @app_commands.autocomplete(evento=_ac_eventos)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_seleccionados(self, interaction: discord.Interaction, evento: str):
-        ev            = await db.mge_get_evento(int(evento))
-        seleccionados = await db.mge_get_seleccionados(int(evento))
-
-        if not seleccionados:
-            await interaction.response.send_message(
-                f'⏳ Todavía no hay participantes asignados para **{ev["nombre"] if ev else "este MGE"}**.\n'
-                f'_No participants assigned yet for **{ev["nombre"] if ev else "this MGE"}**._',
-                ephemeral=True,
-            )
-            return
-
-        medallas = ['🥇', '🥈', '🥉']
-        lineas   = []
-        for s in seleccionados:
-            pos    = medallas[s['posicion'] - 1] if s['posicion'] <= 3 else f'**#{s["posicion"]}**'
-            lineas.append(f'{pos} **{s["gobernador"]}** — 🎯 {fmt_poder(s["poder"])}')
-
-        embed = discord.Embed(
-            title=f'🏆 Seleccionados / Selected — {ev["nombre"]}',
-            description='\n'.join(lineas),
-            color=0xFFD700,
-        )
-        embed.set_footer(text=f'{len(seleccionados)}/{ev["max_plazas"]} plazas / slots · {ALIANZA_TAG} · Reino {REINO}')
-        await interaction.response.send_message(embed=embed)
-
-    # ── /mge-anunciar ─────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-anunciar', description='[ADMIN] Anuncia un MGE en el canal de anuncios / Announce an MGE')
-    @app_commands.describe(
-        evento='MGE a anunciar / MGE to announce',
-        tropa='Tipo de tropa al que va dirigido / Troop type (empty = all troops)',
-        canal='Canal donde publicar / Channel to post (empty = auto #anuncios)',
-    )
-    @app_commands.autocomplete(evento=_ac_eventos)
     @app_commands.choices(tropa=[
-        app_commands.Choice(name='⚔️ Infantería',       value='infanteria'),
-        app_commands.Choice(name='🐴 Caballería',        value='caballeria'),
-        app_commands.Choice(name='🏹 Arqueros',          value='arqueros'),
-        app_commands.Choice(name='⚙️ Maquinaria',       value='maquinaria'),
-        app_commands.Choice(name='🔀 Mixto',             value='mixto'),
-        app_commands.Choice(name='🌐 Todas las tropas',  value='todas'),
+        app_commands.Choice(name='🗡️ Infantería',      value='infanteria'),
+        app_commands.Choice(name='🐴 Caballería',       value='caballeria'),
+        app_commands.Choice(name='🏹 Arqueros',         value='arqueros'),
+        app_commands.Choice(name='⚙️ Maquinaria',      value='maquinaria'),
+        app_commands.Choice(name='🔱 Mixto',            value='mixto'),
+        app_commands.Choice(name='🌐 Todas las tropas', value='todas'),
     ])
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_anunciar(self, interaction: discord.Interaction, evento: str,
-                           tropa: str = 'todas', canal: discord.TextChannel = None):
-        ev = await db.mge_get_evento(int(evento))
-        if not ev or not ev['activo']:
-            await interaction.response.send_message('❌ MGE no encontrado o cerrado. / MGE not found or closed.', ephemeral=True)
-            return
+    async def mge_crear(self, interaction: discord.Interaction, tropa: str = 'todas', anunciar: bool = True):
+        await interaction.response.send_modal(CrearModal(tropa, anunciar))
 
-        if not canal:
-            canal = next(
-                (c for c in interaction.guild.text_channels
-                 if 'anuncios' in c.name and 'kvk' not in c.name and 'ark' not in c.name),
-                None,
-            )
-        if not canal:
-            await interaction.response.send_message(
-                '❌ No encontré canal de anuncios. Especifica el canal con `canal`.\n'
-                '_No announcement channel found. Specify the channel with the `canal` parameter._',
-                ephemeral=True,
-            )
-            return
+    # ── /mge-tablon ────────────────────────────────────────────────────────────
 
-        canal_inscripciones = next(
-            (c for c in interaction.guild.text_channels if 'mge-inscripciones' in c.name), None
-        )
-
-        TROPAS_FULL = {
-            'infanteria': '⚔️ Infantería / Infantry',
-            'caballeria': '🐴 Caballería / Cavalry',
-            'arqueros':   '🏹 Arqueros / Archers',
-            'maquinaria': '⚙️ Maquinaria / Siege',
-            'mixto':      '🔀 Mixto / Mixed',
-            'todas':      '🌐 Todas las tropas / All troops',
-        }
-        nombre_tropa = TROPAS_FULL.get(tropa, '🌐 Todas las tropas / All troops')
-
-        mencion_tropa = ''
-        if tropa != 'todas':
-            roles_nombres = {
-                'infanteria': '🗡️ Infantería',
-                'caballeria': '🐴 Caballería',
-                'arqueros':   '🏹 Arqueros',
-                'maquinaria': '⚙️ Maquinaria',
-                'mixto':      '🔱 Mixto',
-            }
-            rol_tropa = discord.utils.get(interaction.guild.roles, name=roles_nombres.get(tropa, ''))
-            if rol_tropa:
-                mencion_tropa = rol_tropa.mention
-
-        seleccionados = await db.mge_get_seleccionados(int(evento))
-        inscritos     = await db.mge_count_inscritos(int(evento))
-        canal_ref     = canal_inscripciones.mention if canal_inscripciones else '**📝│mge-inscripciones**'
-
-        tropa_line_es = f'Este MGE está orientado a **{nombre_tropa}**.\n' if tropa != 'todas' else ''
-        tropa_line_en = f'_This MGE is for **{nombre_tropa}**._\n' if tropa != 'todas' else ''
-
-        embed = discord.Embed(
-            title=f'🔥 {ev["nombre"]} — ¡Inscripciones abiertas! / Enrollments open!',
-            description=(
-                f'**{ALIANZA_FULL} · Reino {REINO}**\n\n'
-                f'¡Ha comenzado el período de inscripciones para el **{ev["nombre"]}**!\n'
-                f'_Enrollment period for **{ev["nombre"]}** has started!_\n'
-                f'{tropa_line_es}{tropa_line_en}'
-                + (f'\n_{ev["descripcion"]}_' if ev['descripcion'] else '')
-            ),
-            color=0xFFD700,
-        )
-
-        embed.add_field(
-            name='📊 Detalles del evento / Event Details',
-            value=(
-                f'🎯 **Meta / Target power:** {fmt_poder(ev["poder_min"])}\n'
-                f'👥 **Plazas / Slots:** {ev["max_plazas"]} participantes / participants\n'
-                f'🗡️ **Tropa / Troop:** {nombre_tropa}'
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name='📋 Cómo inscribirse / How to enroll',
-            value=(
-                f'**1.** Ve al canal / Go to {canal_ref}\n'
-                f'**2.** Usa `/mge-lista` para ver el evento · _Use `/mge-lista` to see the event_\n'
-                f'**3.** Usa `/mge-inscribir` y selecciona **{ev["nombre"]}** · _Use `/mge-inscribir` and select **{ev["nombre"]}**_\n'
-                f'**4.** El liderazgo asignará las {ev["max_plazas"]} plazas · _Leadership will assign the {ev["max_plazas"]} slots_\n\n'
-                f'> ⚠️ Necesitas el perfil registrado con `/registrar` · _You need a profile registered with `/registrar`_'
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name='⏳ Estado actual / Current Status',
-            value=(
-                f'📝 **Inscritos / Enrolled:** {inscritos}\n'
-                f'🏆 **Plazas asignadas / Assigned slots:** {len(seleccionados)}/{ev["max_plazas"]}'
-            ),
-            inline=False,
-        )
-
-        embed.set_footer(text=f'Usa /mge-salir para cancelar · Use /mge-salir to cancel · {ALIANZA_TAG} · Reino {REINO}')
-
-        content = mencion_tropa if mencion_tropa else None
-        await canal.send(content=content, embed=embed)
-        await interaction.response.send_message(
-            f'✅ Anuncio del **{ev["nombre"]}** publicado en {canal.mention}.', ephemeral=True
-        )
-
-    # ── /mge-publicar ──────────────────────────────────────────────────────────
-
-    @app_commands.command(name='mge-publicar', description='[ADMIN] Publica la lista final con metas individuales / Publish final participant list')
-    @app_commands.describe(evento='MGE a publicar / MGE to publish')
+    @app_commands.command(name='mge-tablon', description='[ADMIN] Vuelve a publicar el tablón de un MGE en este canal')
+    @app_commands.describe(evento='MGE cuyo tablón quieres publicar aquí')
     @app_commands.autocomplete(evento=_ac_eventos)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def mge_publicar(self, interaction: discord.Interaction, evento: str):
-        ev            = await db.mge_get_evento(int(evento))
-        seleccionados = await db.mge_get_seleccionados(int(evento))
-
-        if not seleccionados:
-            await interaction.response.send_message(
-                '❌ No hay participantes asignados todavía. / No participants assigned yet.', ephemeral=True
-            )
+    async def mge_tablon(self, interaction: discord.Interaction, evento: str):
+        ev = await db.mge_get_evento(int(evento))
+        if not ev or ev['guild_id'] != str(interaction.guild_id) or not ev['activo']:
+            await interaction.response.send_message('❌ MGE no encontrado o finalizado.', ephemeral=True)
             return
-
-        medallas = ['🥇', '🥈', '🥉']
-        lineas   = []
-        for s in seleccionados:
-            pos = medallas[s['posicion'] - 1] if s['posicion'] <= 3 else f'**#{s["posicion"]}**'
-            lineas.append(f'{pos} **{s["gobernador"]}** — 🎯 Meta / Target: **{fmt_poder(s["poder"])}**')
-
-        menciones = ' '.join(f'<@{s["user_id"]}>' for s in seleccionados if not s['user_id'].startswith('ext_'))
-
-        embed = discord.Embed(
-            title=f'🏆 Participantes / Participants — {ev["nombre"]}',
-            description=(
-                f'**{ALIANZA_FULL} · Reino {REINO}**\n\n'
-                f'¡Estos son los **{len(seleccionados)}** seleccionados y sus metas!\n'
-                f'_These are the **{len(seleccionados)}** selected participants and their targets!_'
-            ),
-            color=0xFFD700,
-        )
-        embed.add_field(name='🎖️ Participantes / Participants', value='\n'.join(lineas), inline=False)
-        embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
-
-        canal_resultados = None
-        canal_id = await db.get_config(str(interaction.guild_id), 'mge_canal_resultados')
-        if canal_id:
-            canal_resultados = interaction.guild.get_channel(int(canal_id))
-        if not canal_resultados:
-            canal_resultados = next(
-                (c for c in interaction.guild.text_channels if 'mge-resultados' in c.name), None
-            )
-
-        if canal_resultados and canal_resultados != interaction.channel:
-            await canal_resultados.send(content=menciones or None, embed=embed)
-            await interaction.response.send_message(
-                f'✅ Lista publicada en / Published in {canal_resultados.mention}', ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(content=menciones or None, embed=embed)
+        # Borrar el tablón anterior para que solo haya uno con botones
+        if ev['canal_id'] and ev['mensaje_id']:
+            antiguo = self.bot.get_channel(int(ev['canal_id']))
+            if antiguo:
+                try:
+                    await antiguo.get_partial_message(int(ev['mensaje_id'])).delete()
+                except discord.HTTPException:
+                    pass
+        msg = await publicar_tablon(interaction.channel, int(ev['id']))
+        await interaction.response.send_message(f'✅ Tablón publicado: {msg.jump_url}', ephemeral=True)
 
     # ── /mge-historial ─────────────────────────────────────────────────────────
 
@@ -600,7 +820,6 @@ class Mge(commands.Cog):
     @app_commands.describe(usuario='Gobernador a consultar (vacío = lista general) / Governor to check (empty = general list)')
     async def mge_historial(self, interaction: discord.Interaction, usuario: discord.Member = None):
         guild_id = str(interaction.guild_id)
-        medallas = ['🥇', '🥈', '🥉']
 
         if usuario:
             historial = await db.mge_get_historial_usuario(guild_id, str(usuario.id))
@@ -621,10 +840,9 @@ class Mge(commands.Cog):
             else:
                 lineas = []
                 for h in historial:
-                    pos   = medallas[h['posicion'] - 1] if h['posicion'] <= 3 else f'**#{h["posicion"]}**'
                     fecha = h['created_at'][:10] if h['created_at'] else '—'
                     lineas.append(
-                        f'{pos} **{h["nombre"]}** — 🎯 {fmt_poder(h["meta_individual"])} · 📅 {fecha}'
+                        f'{medalla(h["posicion"])} **{h["nombre"]}** — 🎯 {fmt_poder(h["meta_individual"])} · 📅 {fecha}'
                     )
                 embed.description = '\n'.join(lineas)
                 embed.set_footer(text=f'{len(historial)} participaciones / participations · {ALIANZA_TAG} · Reino {REINO}')
@@ -652,11 +870,7 @@ class Mge(commands.Cog):
             selec = await db.mge_get_seleccionados(int(e['id']))
             fecha = e['created_at'][:10] if e['created_at'] else '—'
             if selec:
-                partes = []
-                for s in selec[:3]:
-                    pos_str = medallas[s['posicion'] - 1] if s['posicion'] <= 3 else f'#{s["posicion"]}'
-                    partes.append(f'{pos_str} {s["gobernador"]}')
-                top3 = ' · '.join(partes)
+                top3 = ' · '.join(f'{medalla(s["posicion"])} {s["gobernador"]}' for s in selec[:3])
             else:
                 top3 = '_Sin participantes / No participants_'
             embed.add_field(
@@ -673,14 +887,7 @@ class Mge(commands.Cog):
     # ── Errores ────────────────────────────────────────────────────────────────
 
     @mge_crear.error
-    @mge_cerrar.error
-    @mge_participantes.error
-    @mge_asignar.error
-    @mge_inscribir_externo.error
-    @mge_quitar.error
-    @mge_anunciar.error
-    @mge_publicar.error
-    @mge_seleccionados.error
+    @mge_tablon.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(

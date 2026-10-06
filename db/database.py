@@ -201,11 +201,25 @@ async def init_db():
         ''')
         await db.commit()
         # Migración: añadir cabezas a mge_inscripciones si no existe
-        try:
-            await db.execute('ALTER TABLE mge_inscripciones ADD COLUMN cabezas INTEGER DEFAULT 0')
-            await db.commit()
-        except Exception:
-            pass
+        for columna in ('cabezas INTEGER DEFAULT 0', 'cabezas_txt TEXT DEFAULT \'\''):
+            try:
+                await db.execute(f'ALTER TABLE mge_inscripciones ADD COLUMN {columna}')
+                await db.commit()
+            except Exception:
+                pass
+        # Migración: tablón de inscripción MGE (tropa, cierre automático, mensaje del tablón)
+        for columna in (
+            'tropa TEXT DEFAULT \'todas\'',
+            'cierre_ts INTEGER DEFAULT 0',
+            'canal_id TEXT DEFAULT \'\'',
+            'mensaje_id TEXT DEFAULT \'\'',
+            'inscripcion_abierta INTEGER DEFAULT 1',
+        ):
+            try:
+                await db.execute(f'ALTER TABLE mge_eventos ADD COLUMN {columna}')
+                await db.commit()
+            except Exception:
+                pass
         # Migración: añadir columnas a kvk_temporadas si no existen
         for columna in (
             'historia TEXT DEFAULT \'\'',
@@ -695,14 +709,61 @@ async def kvk_get_bajas_acumuladas(temporada_id: int) -> list:
 
 # ─── MGE ──────────────────────────────────────────────────────────────────────
 
-async def mge_crear_evento(guild_id: str, nombre: str, poder_min: int, max_plazas: int, descripcion: str) -> int:
+async def mge_crear_evento(guild_id: str, nombre: str, poder_min: int, max_plazas: int, descripcion: str,
+                           tropa: str = 'todas', cierre_ts: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            'INSERT INTO mge_eventos (guild_id, nombre, poder_min, max_plazas, descripcion) VALUES (?,?,?,?,?)',
-            (guild_id, nombre, poder_min, max_plazas, descripcion)
+            'INSERT INTO mge_eventos (guild_id, nombre, poder_min, max_plazas, descripcion, tropa, cierre_ts) '
+            'VALUES (?,?,?,?,?,?,?)',
+            (guild_id, nombre, poder_min, max_plazas, descripcion, tropa, cierre_ts)
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def mge_set_tablon(evento_id: int, canal_id: str, mensaje_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'UPDATE mge_eventos SET canal_id=?, mensaje_id=? WHERE id=?',
+            (canal_id, mensaje_id, evento_id)
+        )
+        await db.commit()
+
+
+async def mge_get_evento_por_mensaje(mensaje_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute('SELECT * FROM mge_eventos WHERE mensaje_id=?', (mensaje_id,))
+        return await cursor.fetchone()
+
+
+async def mge_set_inscripcion_abierta(evento_id: int, abierta: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'UPDATE mge_eventos SET inscripcion_abierta=? WHERE id=?',
+            (1 if abierta else 0, evento_id)
+        )
+        await db.commit()
+
+
+async def mge_get_pendientes_autocierre(ahora_ts: int) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            'SELECT * FROM mge_eventos WHERE activo=1 AND inscripcion_abierta=1 AND cierre_ts>0 AND cierre_ts<=?',
+            (ahora_ts,)
+        )
+        return await cursor.fetchall()
+
+
+async def mge_set_meta_individual(evento_id: int, user_id: str, meta: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            'UPDATE mge_seleccionados SET poder=? WHERE evento_id=? AND user_id=?',
+            (meta, evento_id, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 async def mge_get_eventos_activos(guild_id: str) -> list:
@@ -759,23 +820,34 @@ async def mge_cerrar_evento(guild_id: str, evento_id: int) -> bool:
 
 
 async def mge_inscribir(evento_id: int, guild_id: str, user_id: str,
-                        gobernador: str, poder: int, cabezas: int = 0) -> bool:
+                        gobernador: str, poder: int, cabezas: int = 0, cabezas_txt: str = '') -> bool:
+    """Inscribe o actualiza las cabezas si ya estaba inscrito. Devuelve True si es una inscripción nueva."""
     async with aiosqlite.connect(DB_PATH) as db:
-        try:
-            await db.execute(
-                'INSERT INTO mge_inscripciones (evento_id, guild_id, user_id, gobernador, poder, cabezas) VALUES (?,?,?,?,?,?)',
-                (evento_id, guild_id, user_id, gobernador, poder, cabezas)
-            )
-            await db.commit()
-            return True
-        except aiosqlite.IntegrityError:
-            return False
+        cursor = await db.execute(
+            'SELECT 1 FROM mge_inscripciones WHERE evento_id=? AND user_id=?', (evento_id, user_id)
+        )
+        nueva = await cursor.fetchone() is None
+        await db.execute(
+            'INSERT INTO mge_inscripciones (evento_id, guild_id, user_id, gobernador, poder, cabezas, cabezas_txt) '
+            'VALUES (?,?,?,?,?,?,?) '
+            'ON CONFLICT(evento_id, user_id) DO UPDATE SET '
+            'gobernador=excluded.gobernador, poder=excluded.poder, '
+            'cabezas=excluded.cabezas, cabezas_txt=excluded.cabezas_txt',
+            (evento_id, guild_id, user_id, gobernador, poder, cabezas, cabezas_txt)
+        )
+        await db.commit()
+        return nueva
 
 
 async def mge_cancelar_inscripcion(evento_id: int, user_id: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             'DELETE FROM mge_inscripciones WHERE evento_id=? AND user_id=?',
+            (evento_id, user_id)
+        )
+        # Si tenía plaza asignada, se libera
+        await db.execute(
+            'DELETE FROM mge_seleccionados WHERE evento_id=? AND user_id=?',
             (evento_id, user_id)
         )
         await db.commit()
@@ -786,7 +858,7 @@ async def mge_get_inscritos(evento_id: int) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            'SELECT * FROM mge_inscripciones WHERE evento_id=? ORDER BY poder DESC',
+            'SELECT * FROM mge_inscripciones WHERE evento_id=? ORDER BY id ASC',
             (evento_id,)
         )
         return await cursor.fetchall()
@@ -831,6 +903,13 @@ async def mge_quitar_seleccion(evento_id: int, user_id: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def mge_vaciar_seleccion(evento_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute('DELETE FROM mge_seleccionados WHERE evento_id=?', (evento_id,))
+        await db.commit()
+        return cursor.rowcount
 
 
 async def mge_get_seleccionados(evento_id: int) -> list:
