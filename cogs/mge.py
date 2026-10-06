@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import discord
@@ -167,6 +168,34 @@ async def refrescar_tablon(client: discord.Client, evento_id: int):
         print(f'[mge] No se pudo actualizar el tablón del MGE #{evento_id}: {e}')
 
 
+_tareas: set = set()
+_refrescos_pendientes: set = set()
+
+
+def en_segundo_plano(coro):
+    """Lanza una corrutina sin esperarla, guardando la referencia para que no se pierda."""
+    tarea = asyncio.create_task(coro)
+    _tareas.add(tarea)
+    tarea.add_done_callback(_tareas.discard)
+
+
+def programar_refresco(client: discord.Client, evento_id: int, espera: float = 1.5):
+    """Actualiza el tablón poco después, juntando en una sola edición los cambios seguidos.
+
+    Así el panel responde al momento y no se choca con el límite de ediciones de Discord.
+    """
+    if evento_id in _refrescos_pendientes:
+        return
+    _refrescos_pendientes.add(evento_id)
+
+    async def _tarea():
+        await asyncio.sleep(espera)
+        _refrescos_pendientes.discard(evento_id)
+        await refrescar_tablon(client, evento_id)
+
+    en_segundo_plano(_tarea())
+
+
 async def publicar_tablon(canal: discord.TextChannel, evento_id: int) -> discord.Message:
     ev  = await db.mge_get_evento(evento_id)
     msg = await canal.send(embed=await construir_tablon(ev), view=TablonView(abierta=bool(ev['inscripcion_abierta'])))
@@ -189,7 +218,7 @@ async def guardar_inscripcion(interaction: discord.Interaction, evento_id: int,
 
     nueva = await db.mge_inscribir(evento_id, str(interaction.guild_id), str(interaction.user.id),
                                    gobernador, poder, cabezas, cabezas_txt)
-    await refrescar_tablon(interaction.client, evento_id)
+    programar_refresco(interaction.client, evento_id)
 
     mostrar = cabezas_txt or str(cabezas)
     if nueva:
@@ -299,7 +328,7 @@ class TablonView(discord.ui.View):
         if not ok:
             await interaction.response.send_message('ℹ️ No estabas apuntado. / You were not signed up.', ephemeral=True)
             return
-        await refrescar_tablon(interaction.client, int(ev['id']))
+        programar_refresco(interaction.client, int(ev['id']))
         aviso = '\n⚠️ Has dejado libre tu plaza. / _You gave up your slot._' if tenia else ''
         await interaction.response.send_message(
             f'🚪 Te has borrado de **{ev["nombre"]}**. / _You left **{ev["nombre"]}**._{aviso}', ephemeral=True
@@ -315,27 +344,38 @@ class TablonView(discord.ui.View):
             return
         panel = PanelAdmin(int(ev['id']))
         await panel.recargar()
-        await interaction.response.send_message(embed=panel.embed(), view=panel, ephemeral=True)
+        await interaction.response.send_message(view=panel, ephemeral=True)
 
 
 # ── Panel de administración (privado) ──────────────────────────────────────────
 
-class MetaModal(discord.ui.Modal, title='🎯 Meta individual / Individual target'):
+POR_PAGINA = 10  # plazas por página del panel (cada plaza es un desplegable)
+
+
+class MetaModal(discord.ui.Modal, title='🎯 Meta / Target'):
     meta = discord.ui.TextInput(label='Meta de poder / Power target', placeholder='Ej: 60M, 45000K', max_length=20)
 
-    def __init__(self, panel: 'PanelAdmin', user_id: str):
+    def __init__(self, panel: 'PanelAdmin', posicion: str):
         super().__init__()
-        self.panel   = panel
-        self.user_id = user_id
+        self.panel    = panel
+        self.posicion = posicion  # número de plaza o 'todas'
 
     async def on_submit(self, interaction: discord.Interaction):
         meta = parse_poder(self.meta.value)
         if meta < 0:
             await interaction.response.send_message('❌ Formato: `50M`, `30000K` o `50000000`', ephemeral=True)
             return
-        await db.mge_set_meta_individual(self.panel.evento_id, self.user_id, meta)
-        await refrescar_tablon(interaction.client, self.panel.evento_id)
-        await self.panel.render(interaction, f'🎯 Meta individual → **{fmt_poder(meta)}**')
+        if self.posicion == 'todas':
+            for s in self.panel.selec:
+                await db.mge_set_meta_individual(self.panel.evento_id, s['user_id'], meta)
+            aviso = f'🎯 Todas las plazas → **{fmt_poder(meta)}**'
+        else:
+            s = next((s for s in self.panel.selec if s['posicion'] == int(self.posicion)), None)
+            if s:
+                await db.mge_set_meta_individual(self.panel.evento_id, s['user_id'], meta)
+            aviso = f'🎯 Plaza #{self.posicion} → **{fmt_poder(meta)}**'
+        programar_refresco(interaction.client, self.panel.evento_id)
+        await self.panel.render(interaction, aviso)
 
 
 class ExternoModal(discord.ui.Modal, title='➕ Inscribir externo / External'):
@@ -356,258 +396,204 @@ class ExternoModal(discord.ui.Modal, title='➕ Inscribir externo / External'):
         miembro = await db.get_member(str(interaction.guild_id), user_id)
         poder   = miembro['poder'] if miembro else 0
         await db.mge_inscribir(self.panel.evento_id, str(interaction.guild_id), user_id, nombre, poder, int(valor), '')
-        await refrescar_tablon(interaction.client, self.panel.evento_id)
-        self.panel.seleccionado = user_id
+        programar_refresco(interaction.client, self.panel.evento_id)
         await self.panel.render(interaction, f'➕ **{nombre}** _(externo)_ inscrito con 🗿 {valor}')
 
 
-class PanelAdmin(discord.ui.View):
-    """Panel privado para el liderazgo: se elige un gobernador y se actúa sobre él."""
+class PanelAdmin(discord.ui.LayoutView):
+    """Panel privado del liderazgo: una lista de plazas, cada una con su desplegable (nombre + meta)."""
 
     def __init__(self, evento_id: int):
         super().__init__(timeout=900)
-        self.evento_id        = evento_id
-        self.seleccionado     = None   # user_id elegido en el desplegable
-        self.confirmar_final  = False
-        self.pagina           = 0      # página de la lista de espera en el asignado rápido
-        self.ev               = None
-        self.inscritos        = []
-        self.selec            = []
+        self.evento_id       = evento_id
+        self.modo            = 'plazas'  # 'plazas' o 'mas' (más opciones)
+        self.pagina          = 0
+        self.aviso           = ''
+        self.confirmar_final = False
+        self.ev              = None
+        self.inscritos       = []
+        self.selec           = []
 
-    # ── Datos y pintado ────────────────────────────────────────────────────────
+    # ── Datos ──────────────────────────────────────────────────────────────────
 
     def _plaza_de(self, user_id: str):
         return next((s for s in self.selec if s['user_id'] == user_id), None)
-
-    async def recargar(self):
-        self.ev        = await db.mge_get_evento(self.evento_id)
-        self.inscritos = await db.mge_get_inscritos(self.evento_id)
-        self.selec     = await db.mge_get_seleccionados(self.evento_id)
-        if self.seleccionado and not any(i['user_id'] == self.seleccionado for i in self.inscritos):
-            self.seleccionado = None
-        self._montar()
 
     def _espera(self) -> list:
         asignados = {s['user_id'] for s in self.selec}
         return [i for i in self.inscritos if i['user_id'] not in asignados]
 
-    def _siguiente_libre(self):
-        ocupadas = {s['posicion'] for s in self.selec}
-        return next((p for p in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1) if p not in ocupadas), None)
+    def _n_plazas(self) -> int:
+        return min(self.ev['max_plazas'], MAX_PLAZAS)
+
+    async def recargar(self):
+        self.ev        = await db.mge_get_evento(self.evento_id)
+        self.inscritos = await db.mge_get_inscritos(self.evento_id)
+        self.selec     = await db.mge_get_seleccionados(self.evento_id)
+        self._montar()
+
+    async def render(self, interaction: discord.Interaction, aviso: str = ''):
+        self.aviso = aviso
+        await self.recargar()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
+
+    # ── Pintado ────────────────────────────────────────────────────────────────
 
     def _montar(self):
         self.clear_items()
-        activo = bool(self.ev['activo'])
+        ev     = self.ev
+        activo = bool(ev['activo'])
+        estado = ('🏁 finalizado' if not activo
+                  else '🟢 inscripciones abiertas' if ev['inscripcion_abierta'] else '🔒 inscripciones cerradas')
+        cabecera = (f'## ⚙️ {ev["nombre"]}\n'
+                    f'👥 **{len(self.inscritos)}** inscritos · 🏆 **{len(self.selec)}/{self._n_plazas()}** plazas · {estado}')
+        if self.aviso:
+            cabecera += f'\n> {self.aviso}'
 
-        # Fila 0: marcar de golpe a los que entran (selección múltiple sobre la lista de espera)
-        espera    = self._espera()
-        siguiente = self._siguiente_libre()
-        libres    = min(self.ev['max_plazas'], MAX_PLAZAS) - len(self.selec)
-        if activo and siguiente and espera:
-            if self.pagina * 25 >= len(espera):
-                self.pagina = 0
-            trozo    = espera[self.pagina * 25:(self.pagina + 1) * 25]
-            opciones = []
-            for n, i in enumerate(trozo, self.pagina * 25 + 1):
-                desc = f'🗿 {txt_cabezas(i)}' + (f' · {fmt_poder(i["poder"])}' if i['poder'] else '')
-                opciones.append(discord.SelectOption(label=f'{n}. {i["gobernador"]}'[:100], value=i['user_id'],
-                                                     description=desc[:100]))
-            sel_rapido = discord.ui.Select(
-                placeholder=f'✅ Marca a los que entran (hasta {libres}) / Tick who gets in',
-                options=opciones, row=0, min_values=1, max_values=min(libres, len(opciones)),
-            )
+        contenedor = discord.ui.Container(accent_colour=0xFFD700)
+        contenedor.add_item(discord.ui.TextDisplay(cabecera))
+        contenedor.add_item(discord.ui.Separator())
+        if self.modo == 'mas':
+            self._montar_mas(contenedor, activo)
         else:
-            texto = ('✅ Todas las plazas cubiertas / All slots filled' if not siguiente
-                     else 'Nadie en lista de espera / Nobody waiting')
-            sel_rapido = discord.ui.Select(placeholder=texto, row=0, disabled=True,
-                                           options=[discord.SelectOption(label='—', value='none')])
-        sel_rapido.callback = self._asignar_rapido
-        self.add_item(sel_rapido)
+            self._montar_plazas(contenedor, activo)
+        self.add_item(contenedor)
 
-        # Fila 1: retocar a un gobernador (primero los que tienen plaza, por orden de plaza)
-        con_plaza_ids = [s['user_id'] for s in self.selec]
-        por_user      = {i['user_id']: i for i in self.inscritos}
-        orden         = [por_user[u] for u in con_plaza_ids if u in por_user] + espera
-        if orden:
-            opciones = []
-            for i in orden[:25]:
-                plaza = self._plaza_de(i['user_id'])
-                desc  = f'🗿 {txt_cabezas(i)}' + (f' · plaza #{plaza["posicion"]}' if plaza else ' · en espera')
-                opciones.append(discord.SelectOption(
-                    label=i['gobernador'][:100], value=i['user_id'], description=desc[:100],
-                    emoji='🏆' if plaza else '📝', default=i['user_id'] == self.seleccionado,
-                ))
-            sel_gob = discord.ui.Select(placeholder='✏️ Retocar: elige un gobernador / Edit a governor',
-                                        options=opciones, row=1, disabled=not activo)
-        else:
-            sel_gob = discord.ui.Select(placeholder='Nadie inscrito todavía / Nobody yet', row=1, disabled=True,
-                                        options=[discord.SelectOption(label='—', value='none')])
-        sel_gob.callback = self._elegir_gobernador
-        self.add_item(sel_gob)
-
-        # Fila 2: mover al gobernador elegido a otra plaza (si está ocupada, se intercambian)
-        ocupadas = {s['posicion']: s for s in self.selec}
-        actual   = self._plaza_de(self.seleccionado) if self.seleccionado else None
-        opciones = []
-        for pos in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1):
-            ocupante = ocupadas.get(pos)
-            opciones.append(discord.SelectOption(
-                label=f'#{pos} · {ocupante["gobernador"] if ocupante else "libre / open"}'[:100],
-                value=str(pos),
-                emoji=MEDALLAS[pos - 1] if pos <= 3 else ('🔸' if ocupante else '⬜'),
-                default=bool(actual and actual['posicion'] == pos),
-            ))
-        sel_pos = discord.ui.Select(placeholder='↕️ Mover a la plaza… / Move to slot…', options=opciones, row=2,
-                                    disabled=not (activo and self.seleccionado))
-        sel_pos.callback = self._asignar_posicion
-        self.add_item(sel_pos)
-
-        # Fila 3: acciones
-        con_plaza = bool(activo and actual)
-        abierta   = bool(self.ev['inscripcion_abierta'])
-        self._boton('Meta', '🎯', discord.ButtonStyle.primary, 3, self._meta, not con_plaza)
-        self._boton('Quitar', '❌', discord.ButtonStyle.danger, 3, self._quitar, not con_plaza)
-        self._boton('Vaciar plazas', '🧹', discord.ButtonStyle.secondary, 3, self._vaciar, not (activo and self.selec))
-        self._boton('Externo', '➕', discord.ButtonStyle.secondary, 3, self._externo, not activo)
-        self._boton('Cerrar inscr.' if abierta else 'Reabrir inscr.',
-                    '🔒' if abierta else '🔓', discord.ButtonStyle.secondary, 3, self._abrir_cerrar, not activo)
-
-        # Fila 4: publicar, finalizar y paginar la lista de espera si hay más de 25
-        self._boton('Publicar lista final', '📢', discord.ButtonStyle.success, 4, self._publicar,
-                    not (activo and self.selec))
-        self._boton('¿Seguro? Pulsa otra vez' if self.confirmar_final else 'Finalizar MGE',
-                    '⚠️' if self.confirmar_final else '🏁', discord.ButtonStyle.danger, 4, self._finalizar, not activo)
-        if activo and siguiente and len(espera) > 25:
-            self._boton('Siguientes 25', '➡️', discord.ButtonStyle.secondary, 4, self._pagina)
-
-    def _boton(self, label, emoji, style, row, callback, disabled=False):
-        boton = discord.ui.Button(label=label, emoji=emoji, style=style, row=row, disabled=disabled)
+    def _boton(self, fila, label, emoji, style, callback, disabled=False):
+        boton = discord.ui.Button(label=label, emoji=emoji, style=style, disabled=disabled)
         boton.callback = callback
-        self.add_item(boton)
+        fila.add_item(boton)
 
-    def _lista(self) -> str:
-        """Lista numerada de todos los inscritos con su estado."""
-        if not self.inscritos:
-            return '\n\n_Nadie inscrito todavía._'
-        texto = f'\n\n📋 **Inscritos / Signed up ({len(self.inscritos)})**'
-        for n, i in enumerate(self.inscritos, 1):
-            plaza = self._plaza_de(i['user_id'])
-            linea = f'\n`{n:>2}.` {medalla(plaza["posicion"]) if plaza else "📝"} **{i["gobernador"]}** · 🗿 {txt_cabezas(i)}'
-            if i['poder']:
-                linea += f' · {fmt_poder(i["poder"])}'
-            if len(texto) + len(linea) > 3500:
-                return texto + f'\n_… y {len(self.inscritos) - n + 1} más_'
-            texto += linea
-        return texto
-
-    def embed(self, aviso: str = '') -> discord.Embed:
-        ev    = self.ev
-        libre = ev['max_plazas'] - len(self.selec)
-        e = discord.Embed(
-            title=f'⚙️ Gestión — {ev["nombre"]}',
-            description=(
-                f'👥 **{len(self.inscritos)}** inscritos · 🏆 **{len(self.selec)}/{ev["max_plazas"]}** plazas '
-                f'({libre} libres) · {"🟢 abiertas" if ev["inscripcion_abierta"] else "🔒 cerradas"}'
-                + self._lista()
-            ),
-            color=0x2F3136,
+    def _desplegable_plaza(self, pos: int, activo: bool) -> discord.ui.Select:
+        ocupante = next((s for s in self.selec if s['posicion'] == pos), None)
+        por_user = {i['user_id']: i for i in self.inscritos}
+        meta     = ocupante['poder'] if ocupante else self.ev['poder_min']
+        emoji    = MEDALLAS[pos - 1] if pos <= 3 else None
+        opciones = []
+        if ocupante:
+            ins = por_user.get(ocupante['user_id'])
+            opciones.append(discord.SelectOption(
+                label=f'#{pos} {ocupante["gobernador"]} — 🎯 {fmt_poder(meta)}'[:100], value=ocupante['user_id'],
+                description=f'🗿 {txt_cabezas(ins)}' if ins else None, emoji=emoji, default=True,
+            ))
+            opciones.append(discord.SelectOption(label='Dejar la plaza vacía', value='__vacia__', emoji='⬜'))
+        for i in self._espera():
+            desc = f'🗿 {txt_cabezas(i)}' + (f' · {fmt_poder(i["poder"])}' if i['poder'] else '') + ' · en espera'
+            opciones.append(discord.SelectOption(label=i['gobernador'][:100], value=i['user_id'],
+                                                 description=desc[:100], emoji='📝'))
+        for s in self.selec:
+            if s['posicion'] != pos:
+                opciones.append(discord.SelectOption(
+                    label=s['gobernador'][:100], value=s['user_id'], emoji='🔁',
+                    description=f'Ahora en #{s["posicion"]} · se intercambian',
+                ))
+        if not opciones:
+            opciones = [discord.SelectOption(label='Nadie inscrito todavía', value='__nada__')]
+        sel = discord.ui.Select(
+            placeholder=f'#{pos} · ⬜ libre — elige quién · 🎯 {fmt_poder(meta)}',
+            options=opciones[:25],
+            disabled=not activo or opciones[0].value == '__nada__',
         )
-        if self.seleccionado:
-            ins   = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
-            plaza = self._plaza_de(self.seleccionado)
-            info  = f'🗿 {txt_cabezas(ins)}'
-            if ins['poder']:
-                info += f' · 💪 {fmt_poder(ins["poder"])}'
-            info += (f'\n🏆 Plaza **#{plaza["posicion"]}** · 🎯 {fmt_poder(plaza["poder"])}'
-                     if plaza else '\n📝 En espera / waiting')
-            e.add_field(name=f'Seleccionado: {ins["gobernador"]}', value=info, inline=False)
+        sel.callback = lambda interaction, p=pos: self._elegir(interaction, p)
+        return sel
+
+    def _montar_plazas(self, contenedor: discord.ui.Container, activo: bool):
+        n_plazas = self._n_plazas()
+        paginas  = (n_plazas + POR_PAGINA - 1) // POR_PAGINA
+        self.pagina = min(self.pagina, paginas - 1)
+        desde = self.pagina * POR_PAGINA + 1
+        hasta = min(desde + POR_PAGINA - 1, n_plazas)
+        for pos in range(desde, hasta + 1):
+            contenedor.add_item(discord.ui.ActionRow(self._desplegable_plaza(pos, activo)))
+
+        contenedor.add_item(discord.ui.Separator())
+        espera = self._espera()
+        if espera:
+            texto = f'📝 **En espera ({len(espera)}):** '
+            nombres = [f'{i["gobernador"]} (🗿 {txt_cabezas(i)})' for i in espera]
+            lista   = ', '.join(nombres)
+            texto  += lista if len(lista) < 1500 else lista[:1500] + '…'
         else:
-            e.add_field(name='Cómo se usa', value=(
-                '✅ **Elegir el top:** en el primer desplegable marca a todos los que entran de una vez; '
-                'ocupan las plazas libres en el orden de la lista.\n'
-                '✏️ **Retocar:** elige un gobernador y muévelo; si la plaza está ocupada, **se intercambian**.\n'
-                '📢 Cuando esté bien, *Publicar lista final*.'
-            ), inline=False)
-        if len(self._espera()) > 25:
-            e.add_field(name='ℹ️', value='Más de 25 en espera: usa ➡️ *Siguientes 25* para ver el resto en el desplegable.', inline=False)
-        if aviso:
-            e.add_field(name='Última acción', value=aviso, inline=False)
-        return e
+            texto = '📝 _Nadie en espera._'
+        contenedor.add_item(discord.ui.TextDisplay(texto))
 
-    async def render(self, interaction: discord.Interaction, aviso: str = ''):
-        await self.recargar()
-        if interaction.response.is_done():
-            await interaction.edit_original_response(embed=self.embed(aviso), view=self)
-        else:
-            await interaction.response.edit_message(embed=self.embed(aviso), view=self)
+        fila = discord.ui.ActionRow()
+        if paginas > 1:
+            self._boton(fila, f'{desde}-{hasta}', '◀️', discord.ButtonStyle.secondary, self._anterior, self.pagina == 0)
+            self._boton(fila, 'Más plazas', '▶️', discord.ButtonStyle.secondary, self._siguiente, self.pagina >= paginas - 1)
+        self._boton(fila, 'Publicar', '📢', discord.ButtonStyle.success, self._publicar, not (activo and self.selec))
+        self._boton(fila, 'Más opciones', '🔧', discord.ButtonStyle.secondary, self._mas)
+        self._boton(fila, 'Cerrar', '✖️', discord.ButtonStyle.secondary, self._cerrar)
+        contenedor.add_item(fila)
 
-    # ── Callbacks ──────────────────────────────────────────────────────────────
+    def _montar_mas(self, contenedor: discord.ui.Container, activo: bool):
+        contenedor.add_item(discord.ui.TextDisplay('### 🔧 Más opciones'))
 
-    async def _elegir_gobernador(self, interaction: discord.Interaction):
-        self.seleccionado    = interaction.data['values'][0]
-        self.confirmar_final = False
-        await self.render(interaction)
+        opciones = [discord.SelectOption(label='Todas las plazas a la vez', value='todas', emoji='🎯')]
+        for s in self.selec:
+            opciones.append(discord.SelectOption(
+                label=f'#{s["posicion"]} {s["gobernador"]} — 🎯 {fmt_poder(s["poder"])}'[:100], value=str(s['posicion']),
+                emoji=MEDALLAS[s['posicion'] - 1] if s['posicion'] <= 3 else None,
+            ))
+        sel_meta = discord.ui.Select(placeholder='🎯 Cambiar la meta de…', options=opciones[:25],
+                                     disabled=not (activo and self.selec))
+        sel_meta.callback = self._elegir_meta
+        contenedor.add_item(discord.ui.ActionRow(sel_meta))
 
-    async def _asignar_posicion(self, interaction: discord.Interaction):
-        pos      = int(interaction.data['values'][0])
-        ins      = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
-        actual   = self._plaza_de(self.seleccionado)
-        ocupante = next((s for s in self.selec if s['posicion'] == pos and s['user_id'] != self.seleccionado), None)
-        meta     = actual['poder'] if actual else self.ev['poder_min']
-        await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), self.seleccionado,
-                                 ins['gobernador'], meta, pos)
-        aviso = f'{medalla(pos)} **{ins["gobernador"]}** → plaza #{pos}'
-        if ocupante and actual:
-            # Intercambio: el que estaba en esa plaza pasa a la antigua del elegido
-            await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), ocupante['user_id'],
-                                     ocupante['gobernador'], ocupante['poder'], actual['posicion'])
-            aviso += f'\n🔁 **{ocupante["gobernador"]}** pasa a la plaza #{actual["posicion"]}'
-        elif ocupante:
-            aviso += f'\n↩️ **{ocupante["gobernador"]}** vuelve a la lista de espera'
-        await refrescar_tablon(interaction.client, self.evento_id)
+        abierta = bool(self.ev['inscripcion_abierta'])
+        fila = discord.ui.ActionRow()
+        self._boton(fila, 'Inscribir externo', '➕', discord.ButtonStyle.secondary, self._externo, not activo)
+        self._boton(fila, 'Cerrar inscripciones' if abierta else 'Reabrir inscripciones',
+                    '🔒' if abierta else '🔓', discord.ButtonStyle.secondary, self._abrir_cerrar, not activo)
+        self._boton(fila, 'Vaciar plazas', '🧹', discord.ButtonStyle.secondary, self._vaciar, not (activo and self.selec))
+        contenedor.add_item(fila)
+
+        fila = discord.ui.ActionRow()
+        self._boton(fila, 'Volver', '⬅️', discord.ButtonStyle.primary, self._volver)
+        self._boton(fila, '¿Seguro? Pulsa otra vez' if self.confirmar_final else 'Finalizar MGE',
+                    '⚠️' if self.confirmar_final else '🏁', discord.ButtonStyle.danger, self._finalizar, not activo)
+        self._boton(fila, 'Cerrar', '✖️', discord.ButtonStyle.secondary, self._cerrar)
+        contenedor.add_item(fila)
+
+    # ── Plazas ─────────────────────────────────────────────────────────────────
+
+    async def _elegir(self, interaction: discord.Interaction, pos: int):
+        valor    = interaction.data['values'][0]
+        guild_id = str(interaction.guild_id)
+        ocupante = next((s for s in self.selec if s['posicion'] == pos), None)
+        meta_pos = ocupante['poder'] if ocupante else self.ev['poder_min']  # la meta va con la plaza
+        aviso    = ''
+
+        if valor == '__vacia__':
+            if ocupante:
+                await db.mge_quitar_seleccion(self.evento_id, ocupante['user_id'])
+                aviso = f'⬜ Plaza #{pos} vacía · **{ocupante["gobernador"]}** vuelve a la espera'
+        elif not ocupante or valor != ocupante['user_id']:
+            ins    = next(i for i in self.inscritos if i['user_id'] == valor)
+            previa = self._plaza_de(valor)
+            await db.mge_seleccionar(self.evento_id, guild_id, valor, ins['gobernador'], meta_pos, pos)
+            aviso = f'{medalla(pos)} **{ins["gobernador"]}** → plaza #{pos}'
+            if previa and ocupante:
+                # Intercambio: el que estaba aquí pasa a la plaza que deja libre el elegido
+                await db.mge_seleccionar(self.evento_id, guild_id, ocupante['user_id'], ocupante['gobernador'],
+                                         previa['poder'], previa['posicion'])
+                aviso += f' · 🔁 **{ocupante["gobernador"]}** pasa a la #{previa["posicion"]}'
+            elif ocupante:
+                aviso += f' · **{ocupante["gobernador"]}** vuelve a la espera'
+
+        programar_refresco(interaction.client, self.evento_id)
         await self.render(interaction, aviso)
 
-    async def _meta(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(MetaModal(self, self.seleccionado))
-
-    async def _quitar(self, interaction: discord.Interaction):
-        ins = next(i for i in self.inscritos if i['user_id'] == self.seleccionado)
-        await db.mge_quitar_seleccion(self.evento_id, self.seleccionado)
-        await refrescar_tablon(interaction.client, self.evento_id)
-        await self.render(interaction, f'❌ **{ins["gobernador"]}** vuelve a la lista de espera')
-
-    async def _asignar_rapido(self, interaction: discord.Interaction):
-        marcados = set(interaction.data['values'])
-        # Se colocan en las plazas libres respetando el orden de la lista
-        elegidos = [i for i in self._espera() if i['user_id'] in marcados]
-        ocupadas = {s['posicion'] for s in self.selec}
-        libres   = [p for p in range(1, min(self.ev['max_plazas'], MAX_PLAZAS) + 1) if p not in ocupadas]
-        lineas   = []
-        for pos, ins in zip(libres, elegidos):
-            await db.mge_seleccionar(self.evento_id, str(interaction.guild_id), ins['user_id'],
-                                     ins['gobernador'], self.ev['poder_min'], pos)
-            lineas.append(f'{medalla(pos)} {ins["gobernador"]}')
-        await refrescar_tablon(interaction.client, self.evento_id)
-        aviso = '✅ Asignados: ' + ' · '.join(lineas) if lineas else '⚠️ No quedaban plazas libres.'
-        await self.render(interaction, aviso[:1024])
-
-    async def _pagina(self, interaction: discord.Interaction):
-        self.pagina += 1
+    async def _anterior(self, interaction: discord.Interaction):
+        self.pagina -= 1
         await self.render(interaction)
 
-    async def _vaciar(self, interaction: discord.Interaction):
-        n = await db.mge_vaciar_seleccion(self.evento_id)
-        await refrescar_tablon(interaction.client, self.evento_id)
-        await self.render(interaction, f'🧹 {n} plazas vaciadas; todos vuelven a la lista de espera.')
-
-    async def _externo(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ExternoModal(self))
-
-    async def _abrir_cerrar(self, interaction: discord.Interaction):
-        abrir = not self.ev['inscripcion_abierta']
-        await db.mge_set_inscripcion_abierta(self.evento_id, abrir)
-        await refrescar_tablon(interaction.client, self.evento_id)
-        await self.render(interaction, '🔓 Inscripciones reabiertas' if abrir else '🔒 Inscripciones cerradas')
+    async def _siguiente(self, interaction: discord.Interaction):
+        self.pagina += 1
+        await self.render(interaction)
 
     async def _publicar(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -626,32 +612,45 @@ class PanelAdmin(discord.ui.View):
         embed.set_footer(text=f'{ALIANZA_TAG} · Reino {REINO}')
         menciones = ' '.join(f'<@{s["user_id"]}>' for s in self.selec if not es_externo(s['user_id']))
 
-        guild  = interaction.guild
-        canal  = None
+        guild    = interaction.guild
+        canal    = None
         canal_id = await db.get_config(str(guild.id), 'mge_canal_resultados')
         if canal_id:
             canal = guild.get_channel(int(canal_id))
         canal = canal or buscar_canal(guild, 'mge-resultados') or interaction.channel
         await canal.send(content=menciones or None, embed=embed)
 
-        # Aviso por MD a cada seleccionado con su plaza y su meta
-        enviados = 0
-        for s in self.selec:
-            if es_externo(s['user_id']):
-                continue
-            miembro = guild.get_member(int(s['user_id']))
-            if not miembro:
-                continue
-            try:
-                await miembro.send(
-                    f'🏆 **{ev["nombre"]}** · {ALIANZA_TAG}\n'
-                    f'Tienes la plaza {medalla(s["posicion"])} con meta 🎯 **{fmt_poder(s["poder"])}**. ¡A por ello! 🔥\n'
-                    f'_You got slot #{s["posicion"]} with a **{fmt_poder(s["poder"])}** target. Go for it!_'
-                )
-                enviados += 1
-            except discord.HTTPException:
-                pass
-        await self.render(interaction, f'📢 Lista publicada en {canal.mention} · {enviados} MD enviados')
+        # Los MD se mandan en segundo plano para no hacer esperar al panel
+        en_segundo_plano(enviar_mds(guild, ev['nombre'], list(self.selec)))
+        await self.render(interaction, f'📢 Lista publicada en {canal.mention} · enviando MD a los seleccionados')
+
+    # ── Más opciones ───────────────────────────────────────────────────────────
+
+    async def _mas(self, interaction: discord.Interaction):
+        self.modo = 'mas'
+        await self.render(interaction)
+
+    async def _volver(self, interaction: discord.Interaction):
+        self.modo            = 'plazas'
+        self.confirmar_final = False
+        await self.render(interaction)
+
+    async def _elegir_meta(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(MetaModal(self, interaction.data['values'][0]))
+
+    async def _externo(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ExternoModal(self))
+
+    async def _abrir_cerrar(self, interaction: discord.Interaction):
+        abrir = not self.ev['inscripcion_abierta']
+        await db.mge_set_inscripcion_abierta(self.evento_id, abrir)
+        programar_refresco(interaction.client, self.evento_id)
+        await self.render(interaction, '🔓 Inscripciones reabiertas' if abrir else '🔒 Inscripciones cerradas')
+
+    async def _vaciar(self, interaction: discord.Interaction):
+        n = await db.mge_vaciar_seleccion(self.evento_id)
+        programar_refresco(interaction.client, self.evento_id)
+        await self.render(interaction, f'🧹 {n} plazas vaciadas; todos vuelven a la lista de espera.')
 
     async def _finalizar(self, interaction: discord.Interaction):
         if not self.confirmar_final:
@@ -660,9 +659,38 @@ class PanelAdmin(discord.ui.View):
             return
         await db.mge_set_inscripcion_abierta(self.evento_id, False)
         await db.mge_cerrar_evento(str(interaction.guild_id), self.evento_id)
-        await refrescar_tablon(interaction.client, self.evento_id)
+        programar_refresco(interaction.client, self.evento_id)
+        self.modo = 'plazas'
         await self.render(interaction, '🏁 MGE finalizado. Ya aparece en `/mge-historial`.')
         self.stop()
+
+    async def _cerrar(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.defer()
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            cerrado = discord.ui.LayoutView()
+            cerrado.add_item(discord.ui.TextDisplay('✅ Panel cerrado.'))
+            await interaction.edit_original_response(view=cerrado)
+
+
+async def enviar_mds(guild: discord.Guild, nombre_mge: str, seleccionados: list):
+    """Avisa por MD a cada seleccionado con su plaza y su meta."""
+    for s in seleccionados:
+        if es_externo(s['user_id']):
+            continue
+        miembro = guild.get_member(int(s['user_id']))
+        if not miembro:
+            continue
+        try:
+            await miembro.send(
+                f'🏆 **{nombre_mge}** · {ALIANZA_TAG}\n'
+                f'Tienes la plaza {medalla(s["posicion"])} con meta 🎯 **{fmt_poder(s["poder"])}**. ¡A por ello! 🔥\n'
+                f'_You got slot #{s["posicion"]} with a **{fmt_poder(s["poder"])}** target. Go for it!_'
+            )
+        except discord.HTTPException:
+            pass
 
 
 # ── Creación ───────────────────────────────────────────────────────────────────

@@ -118,6 +118,37 @@ class RefreshView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+class ConfirmarLimpiezaView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label='Sí, limpiar', emoji='🧹', style=discord.ButtonStyle.danger)
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content='🧹 Limpiando…', view=None)
+        canal = interaction.channel
+
+        # Se conservan los anclados y los tablones de MGE activos
+        tablones = {str(ev['mensaje_id']) for ev in await db.mge_get_eventos_activos(str(interaction.guild_id))
+                    if ev['mensaje_id']}
+
+        def borrar(m: discord.Message) -> bool:
+            return not m.pinned and str(m.id) not in tablones
+
+        try:
+            borrados = await canal.purge(limit=None, check=borrar, reason=f'/limpiar-canal por {interaction.user}')
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content='❌ Me falta el permiso **Gestionar mensajes** en este canal.')
+            return
+        await interaction.edit_original_response(content=f'✅ {len(borrados)} mensajes borrados de {canal.mention}.')
+
+    @discord.ui.button(label='Cancelar', style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content='Cancelado, no se ha borrado nada.', view=None)
+
+
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -287,11 +318,26 @@ class Admin(commands.Cog):
             ephemeral=True,
         )
 
+    # ── /limpiar-canal ─────────────────────────────────────────────────────────
+
+    @app_commands.command(name='limpiar-canal', description='[ADMIN] Borra los mensajes de este canal (respeta anclados y tablones MGE)')
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def limpiar_canal(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f'🧹 ¿Borrar todos los mensajes de {interaction.channel.mention}?\n'
+            'Se conservan los **mensajes anclados** 📌 (mensajes fijos, panel de reclutamiento…) '
+            'y los **tablones de MGE activos**.\n'
+            '_Los mensajes de más de 14 días se borran uno a uno, así que puede tardar un poco._',
+            view=ConfirmarLimpiezaView(),
+            ephemeral=True,
+        )
+
     @panel.error
     @anunciar.error
     @resumen_miembros.error
     @config_canal.error
     @sync_comandos.error
+    @limpiar_canal.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message('❌ No tienes permisos para este comando.', ephemeral=True)
