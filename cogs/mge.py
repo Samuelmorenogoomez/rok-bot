@@ -378,6 +378,44 @@ class MetaModal(discord.ui.Modal, title='🎯 Meta / Target'):
         await self.panel.render(interaction, aviso)
 
 
+class MetasModal(discord.ui.Modal, title='🎯 Metas de poder / Power targets'):
+    """Formulario con hasta 5 plazas: cada campo lleva el nombre y su meta actual para editarla."""
+
+    def __init__(self, panel: 'PanelAdmin', posiciones: list):
+        super().__init__()
+        self.panel  = panel
+        self.campos = {}
+        for s in panel.selec:
+            if s['posicion'] not in posiciones:
+                continue
+            prefijo = MEDALLAS[s['posicion'] - 1] if s['posicion'] <= 3 else '🔸'
+            etiqueta = f'{prefijo} #{s["posicion"]} {s["gobernador"]}'[:45]
+            campo = discord.ui.TextInput(
+                label=etiqueta,
+                default=fmt_poder(s['poder']), placeholder='Ej: 60M, 45000K', max_length=20,
+            )
+            self.campos[s['user_id']] = (etiqueta, campo)
+            self.add_item(campo)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        metas, errores = {}, []
+        for user_id, (etiqueta, campo) in self.campos.items():
+            meta = parse_poder(campo.value)
+            if meta < 0:
+                errores.append(etiqueta)
+            else:
+                metas[user_id] = meta
+        if errores:
+            await interaction.response.send_message(
+                '❌ Formato incorrecto en: ' + ', '.join(errores) + '\nUsa `50M`, `30000K` o `50000000`.', ephemeral=True
+            )
+            return
+        for user_id, meta in metas.items():
+            await db.mge_set_meta_individual(self.panel.evento_id, user_id, meta)
+        programar_refresco(interaction.client, self.panel.evento_id)
+        await self.panel.render(interaction, f'🎯 {len(metas)} metas actualizadas')
+
+
 class ExternoModal(discord.ui.Modal, title='➕ Inscribir externo / External'):
     gobernador = discord.ui.TextInput(label='Gobernador (sin Discord)', placeholder='Nombre en el juego', max_length=50)
     cantidad   = discord.ui.TextInput(label='Cabezas doradas / Golden heads', placeholder='Ej: 300', max_length=6)
@@ -520,11 +558,26 @@ class PanelAdmin(discord.ui.LayoutView):
             texto = '📝 _Nadie en espera._'
         contenedor.add_item(discord.ui.TextDisplay(texto))
 
+        # Fila de metas: un formulario por cada 5 plazas ocupadas de esta página
+        ocupadas = [s['posicion'] for s in self.selec if desde <= s['posicion'] <= hasta]
+        grupos   = [ocupadas[i:i + 5] for i in range(0, len(ocupadas), 5)] or [[]]
         fila = discord.ui.ActionRow()
+        for grupo in grupos:
+            etiqueta = f'Metas #{grupo[0]}–#{grupo[-1]}' if len(grupo) > 1 else (f'Meta #{grupo[0]}' if grupo else 'Metas')
+            boton = discord.ui.Button(label=etiqueta, emoji='🎯', style=discord.ButtonStyle.primary,
+                                      disabled=not (activo and grupo))
+            boton.callback = lambda interaction, g=grupo: interaction.response.send_modal(MetasModal(self, g))
+            fila.add_item(boton)
         if paginas > 1:
             self._boton(fila, f'{desde}-{hasta}', '◀️', discord.ButtonStyle.secondary, self._anterior, self.pagina == 0)
             self._boton(fila, 'Más plazas', '▶️', discord.ButtonStyle.secondary, self._siguiente, self.pagina >= paginas - 1)
+        contenedor.add_item(fila)
+
+        abierta = bool(self.ev['inscripcion_abierta'])
+        fila = discord.ui.ActionRow()
         self._boton(fila, 'Publicar', '📢', discord.ButtonStyle.success, self._publicar, not (activo and self.selec))
+        self._boton(fila, 'Cerrar inscripciones' if abierta else 'Reabrir inscripciones',
+                    '🔒' if abierta else '🔓', discord.ButtonStyle.secondary, self._abrir_cerrar, not activo)
         self._boton(fila, 'Más opciones', '🔧', discord.ButtonStyle.secondary, self._mas)
         self._boton(fila, 'Cerrar', '✖️', discord.ButtonStyle.secondary, self._cerrar)
         contenedor.add_item(fila)
@@ -543,11 +596,8 @@ class PanelAdmin(discord.ui.LayoutView):
         sel_meta.callback = self._elegir_meta
         contenedor.add_item(discord.ui.ActionRow(sel_meta))
 
-        abierta = bool(self.ev['inscripcion_abierta'])
         fila = discord.ui.ActionRow()
         self._boton(fila, 'Inscribir externo', '➕', discord.ButtonStyle.secondary, self._externo, not activo)
-        self._boton(fila, 'Cerrar inscripciones' if abierta else 'Reabrir inscripciones',
-                    '🔒' if abierta else '🔓', discord.ButtonStyle.secondary, self._abrir_cerrar, not activo)
         self._boton(fila, 'Vaciar plazas', '🧹', discord.ButtonStyle.secondary, self._vaciar, not (activo and self.selec))
         contenedor.add_item(fila)
 
