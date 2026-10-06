@@ -27,6 +27,7 @@ COGS = [
     'cogs.mge',
     'cogs.reclutamiento',
     'cogs.traduccion',
+    'cogs.setup',
 ]
 
 
