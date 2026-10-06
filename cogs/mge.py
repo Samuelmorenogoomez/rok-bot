@@ -212,24 +212,27 @@ async def guardar_inscripcion(interaction: discord.Interaction, evento_id: int,
     if not ev or not ev['activo'] or not ev['inscripcion_abierta']:
         return '🔒 Las inscripciones de este MGE están cerradas. / Enrollment for this MGE is closed.'
 
-    miembro    = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
-    gobernador = miembro['gobernador'] if miembro else interaction.user.display_name
-    poder      = miembro['poder'] if miembro else 0
+    miembro = await db.get_member(str(interaction.guild_id), str(interaction.user.id))
+    if not miembro:
+        return aviso_sin_perfil(interaction.guild)
 
     nueva = await db.mge_inscribir(evento_id, str(interaction.guild_id), str(interaction.user.id),
-                                   gobernador, poder, cabezas, cabezas_txt)
+                                   miembro['gobernador'], miembro['poder'], cabezas, cabezas_txt)
     programar_refresco(interaction.client, evento_id)
 
     mostrar = cabezas_txt or str(cabezas)
     if nueva:
-        texto = (f'✅ ¡Apuntado a **{ev["nombre"]}** con 🗿 **{mostrar}** cabezas doradas!\n'
-                 f'_Signed up for **{ev["nombre"]}** with 🗿 **{mostrar}** golden heads!_')
-    else:
-        texto = f'✅ Cabezas actualizadas: 🗿 **{mostrar}** / _Heads updated_'
-    if not miembro:
-        texto += ('\n\nℹ️ No tienes perfil: apareces como **' + gobernador + '**. Pulsa 📝 **Registrarme** en el '
-                  'canal de miembros para salir con tu nombre de gobernador. / _No profile yet: press 📝 in the members channel._')
-    return texto
+        return (f'✅ ¡Apuntado a **{ev["nombre"]}** con 🗿 **{mostrar}** cabezas doradas!\n'
+                f'_Signed up for **{ev["nombre"]}** with 🗿 **{mostrar}** golden heads!_')
+    return f'✅ Cabezas actualizadas: 🗿 **{mostrar}** / _Heads updated_'
+
+
+def aviso_sin_perfil(guild: discord.Guild) -> str:
+    canal = buscar_canal(guild, 'miembros')
+    donde = canal.mention if canal else 'el canal de miembros'
+    return (f'❌ Para apuntarte al MGE tienes que estar registrado.\n'
+            f'Pulsa 📝 **Registrarme** en {donde} y vuelve aquí.\n'
+            f'_You must be registered to sign up. Press 📝 **Register** in {donde} and come back._')
 
 
 class CabezasModal(discord.ui.Modal, title='🗿 Cabezas doradas / Golden heads'):
@@ -289,6 +292,9 @@ class TablonView(discord.ui.View):
     async def _abrir_selector(self, interaction: discord.Interaction, ev, texto: str):
         if not ev['inscripcion_abierta']:
             await interaction.response.send_message('🔒 Las inscripciones están cerradas. / Enrollment is closed.', ephemeral=True)
+            return
+        if not await db.get_member(str(interaction.guild_id), str(interaction.user.id)):
+            await interaction.response.send_message(aviso_sin_perfil(interaction.guild), ephemeral=True)
             return
         await interaction.response.send_message(texto, view=CabezasView(int(ev['id'])), ephemeral=True)
 
