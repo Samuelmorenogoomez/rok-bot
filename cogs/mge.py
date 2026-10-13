@@ -352,6 +352,7 @@ class TablonView(discord.ui.View):
         panel = PanelAdmin(int(ev['id']))
         await panel.recargar()
         await interaction.response.send_message(view=panel, ephemeral=True)
+        anotar(interaction.guild, interaction.user, f'MGE · {ev["nombre"]}', '⚙️ abrió el panel de gestión')
 
 
 # ── Panel de administración (privado) ──────────────────────────────────────────

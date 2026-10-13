@@ -443,6 +443,7 @@ class CalendarioView(discord.ui.View):
         panel = PanelEventos(str(interaction.guild_id))
         await panel.recargar()
         await interaction.response.send_message(view=panel, ephemeral=True)
+        anotar(interaction.guild, interaction.user, '📅 Eventos', '⚙️ abrió el panel de gestión')
 
 
 # ── Cog ────────────────────────────────────────────────────────────────────────
