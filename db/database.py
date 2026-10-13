@@ -1027,8 +1027,8 @@ async def get_all_canales_config(guild_id: str) -> list:
 
 
 # ─── Registro de acciones de admin ────────────────────────────────────────────
-# Solo se añade: a propósito no hay ninguna función para borrar ni modificar registros
-# (salvo apuntar en qué mensaje de Discord está publicado cada uno).
+# Solo se añade. La única forma de borrar es la purga automática de lo que tiene más de
+# RETENCION_DIAS (cogs/registro.py), que decidió el usuario para que no se llene.
 
 async def log_insertar(guild_id: str, user_id: str, user_name: str, accion: str, detalle: str, ts: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1070,3 +1070,15 @@ async def log_buscar(guild_id: str, user_id: str = None, texto: str = None, limi
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(sql, params)
         return await cursor.fetchall()
+
+
+async def log_purgar_antiguos(guild_id: str, antes_ts: int) -> list[str]:
+    """Borra los registros anteriores a antes_ts y devuelve los IDs de sus mensajes en Discord."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT mensaje_id FROM log_admin WHERE guild_id=? AND ts<? AND mensaje_id!=''", (guild_id, antes_ts)
+        )
+        mensajes = [r[0] for r in await cursor.fetchall()]
+        await db.execute('DELETE FROM log_admin WHERE guild_id=? AND ts<?', (guild_id, antes_ts))
+        await db.commit()
+        return mensajes

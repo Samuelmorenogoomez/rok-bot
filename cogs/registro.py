@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import COLOR_BOT, ALIANZA_TAG
 from db import database as db
 
 CANAL_NOMBRE   = '📋│logs-bot'
+RETENCION_DIAS = 3   # lo más antiguo se borra solo para que no se llene
 CATEGORIA_ADMIN = '👑 ADMINISTRACIÓN'
 
 # Comandos de admin que no se registran al usarlos: los de solo consulta (para no llenar el canal de ruido)
@@ -55,8 +56,8 @@ async def canal_logs(guild: discord.Guild, crear: bool = True):
         categoria = discord.utils.get(guild.categories, name=CATEGORIA_ADMIN)
         canal = await guild.create_text_channel(
             CANAL_NOMBRE, category=categoria, overwrites=overwrites_logs(guild),
-            topic='Registro de acciones de admin. También se guarda en la base de datos del bot; '
-                  'si se borra algo, el bot lo restaura. Consulta con /log.',
+            topic=f'Registro de acciones de admin de los últimos {RETENCION_DIAS} días (lo anterior se borra solo). '
+                  'Si alguien borra algo, el bot lo restaura. Consulta con /log.',
         )
     if canal and str(canal.id) != canal_id:
         await db.set_config(str(guild.id), 'logs_canal', str(canal.id))
@@ -147,6 +148,35 @@ async def quien_borro(guild: discord.Guild, accion: discord.AuditLogAction, cana
     return None
 
 
+async def purgar_antiguos(guild: discord.Guild, antes_ts: int) -> int:
+    """Borra de la BD y del canal los registros anteriores a antes_ts.
+
+    Primero se borran de la BD: así, cuando desaparece el mensaje, el vigilante de borrados
+    ya no lo encuentra y no lo restaura.
+    """
+    async with _lock:
+        mensajes = await db.log_purgar_antiguos(str(guild.id), antes_ts)
+    canal = await canal_logs(guild, crear=False)
+    if not canal:
+        return 0
+    ids = set(mensajes)
+    # También los avisos del bot (canal recreado, etc.) que no tienen registro propio
+    async for m in canal.history(limit=None, before=datetime.fromtimestamp(antes_ts, timezone.utc)):
+        if m.author == guild.me:
+            ids.add(str(m.id))
+    borrados = 0
+    for mensaje_id in ids:
+        try:
+            await canal.get_partial_message(int(mensaje_id)).delete()
+            borrados += 1
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(f'[registro] No se pudo borrar el mensaje {mensaje_id}: {e}')
+        await asyncio.sleep(0.5)
+    return borrados
+
+
 async def asegurar_canal(guild: discord.Guild):
     """Crea el canal de logs si no existe y lo devuelve a 👑 ADMINISTRACIÓN si se movió (p. ej. al archivo)."""
     canal     = await canal_logs(guild)
@@ -159,6 +189,25 @@ async def asegurar_canal(guild: discord.Guild):
 class Registro(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.purgar.start()
+
+    def cog_unload(self):
+        self.purgar.cancel()
+
+    # ── Purga de lo que tiene más de RETENCION_DIAS ───────────────────────────
+
+    @tasks.loop(hours=1)
+    async def purgar(self):
+        antes = int(time.time()) - RETENCION_DIAS * 86400
+        for guild in self.bot.guilds:
+            try:
+                await purgar_antiguos(guild, antes)
+            except Exception as e:
+                print(f'[registro] Error purgando el log de {guild.name}: {type(e).__name__}: {e}')
+
+    @purgar.before_loop
+    async def antes_purgar(self):
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -239,7 +288,7 @@ class Registro(commands.Cog):
     @app_commands.describe(
         usuario='Solo las acciones de esta persona',
         buscar='Texto a buscar (ej: mge, limpiar, evento)',
-        cantidad='Cuántos registros mostrar (máx. 50, por defecto 20)',
+        cantidad='Cuántos registros mostrar (máx. 50, por defecto 20). Solo hay los de los últimos 3 días',
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def log(self, interaction: discord.Interaction, usuario: discord.Member = None,
