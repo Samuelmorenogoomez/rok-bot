@@ -28,12 +28,15 @@ COGS = [
     'cogs.reclutamiento',
     'cogs.traduccion',
     'cogs.setup',
+    'cogs.registro',
 ]
 
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     import traceback
+    from cogs.registro import registrar_error
+    registrar_error(interaction, error)
     if isinstance(error, discord.app_commands.CheckFailure):
         msg = str(error) if str(error) else '❌ No puedes usar este comando aquí.'
         try:

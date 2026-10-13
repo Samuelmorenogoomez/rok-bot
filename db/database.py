@@ -190,6 +190,17 @@ async def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS log_admin (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id   TEXT NOT NULL,
+                user_id    TEXT NOT NULL,
+                user_name  TEXT NOT NULL,
+                accion     TEXT NOT NULL,
+                detalle    TEXT DEFAULT '',
+                ts         INTEGER NOT NULL,
+                mensaje_id TEXT DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS ausencias (
                 guild_id   TEXT NOT NULL,
                 user_id    TEXT NOT NULL,
@@ -1012,4 +1023,50 @@ async def get_all_canales_config(guild_id: str) -> list:
         cursor = await db.execute(
             'SELECT * FROM config_canales WHERE guild_id=?', (guild_id,)
         )
+        return await cursor.fetchall()
+
+
+# ─── Registro de acciones de admin ────────────────────────────────────────────
+# Solo se añade: a propósito no hay ninguna función para borrar ni modificar registros
+# (salvo apuntar en qué mensaje de Discord está publicado cada uno).
+
+async def log_insertar(guild_id: str, user_id: str, user_name: str, accion: str, detalle: str, ts: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            'INSERT INTO log_admin (guild_id, user_id, user_name, accion, detalle, ts) VALUES (?,?,?,?,?,?)',
+            (guild_id, user_id, user_name, accion, detalle, ts)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def log_set_mensaje(log_id: int, mensaje_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE log_admin SET mensaje_id=? WHERE id=?', (mensaje_id, log_id))
+        await db.commit()
+
+
+async def log_get_por_mensajes(mensaje_ids: list[str]) -> list:
+    if not mensaje_ids:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        marcas = ','.join('?' * len(mensaje_ids))
+        cursor = await db.execute(f'SELECT * FROM log_admin WHERE mensaje_id IN ({marcas}) ORDER BY id', mensaje_ids)
+        return await cursor.fetchall()
+
+
+async def log_buscar(guild_id: str, user_id: str = None, texto: str = None, limite: int = 20) -> list:
+    sql, params = 'SELECT * FROM log_admin WHERE guild_id=?', [guild_id]
+    if user_id:
+        sql += ' AND user_id=?'
+        params.append(user_id)
+    if texto:
+        sql += ' AND (accion LIKE ? OR detalle LIKE ?)'
+        params += [f'%{texto}%', f'%{texto}%']
+    sql += ' ORDER BY id DESC LIMIT ?'
+    params.append(limite)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(sql, params)
         return await cursor.fetchall()

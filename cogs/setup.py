@@ -5,6 +5,7 @@ from discord.ext import commands
 
 from config import COLOR_BOT, GUILD_NAME
 from db import database as db
+from cogs.registro import anotar, overwrites_logs
 
 # Tupla: (nombre, color, mentionable, hoist, permissions)
 # permissions=None → permisos por defecto heredados del servidor
@@ -84,6 +85,7 @@ ESTRUCTURA = [
         'categoria': '👑 ADMINISTRACIÓN',
         'canales': [
             ('💬│chat-admin',    'text',  'admin'),
+            ('📋│logs-bot',      'text',  'logs'),    # registro de acciones de admin (solo lectura)
             ('🎙️│voz-admin',     'voice', 'admin'),
         ],
     },
@@ -231,6 +233,7 @@ class LimpiezaView(discord.ui.View):
                 pass
         await self._borrar_categorias_vacias(guild)
         self.canales, self.confirmar = [], None
+        anotar(interaction.guild, interaction.user, '🙈 Canales ocultados', f'{movidos} canales movidos a {CATEGORIA_ARCHIVO}')
         await self._actualizar(interaction, f'🙈 {movidos} canales movidos a **{CATEGORIA_ARCHIVO}** '
                                             '(solo los ve el liderazgo). Cuando nadie los eche de menos, '
                                             'vuelve a usar `/setup-servidor` para borrarlos.')
@@ -259,6 +262,7 @@ class LimpiezaView(discord.ui.View):
         if archivo and not archivo.channels:
             await archivo.delete(reason='setup-servidor: archivo vacío')
         self.canales, self.confirmar = [], None
+        anotar(interaction.guild, interaction.user, '🗑️ Canales borrados', f'{borrados} canales')
         await self._actualizar(interaction, f'🗑️ {borrados} canales borrados.')
 
     async def _borrar_roles(self, interaction: discord.Interaction):
@@ -280,6 +284,7 @@ class LimpiezaView(discord.ui.View):
             except discord.HTTPException:
                 pass
         self.roles, self.confirmar = [], None
+        anotar(interaction.guild, interaction.user, '🗑️ Roles borrados', f'{borrados} roles')
         await self._actualizar(interaction, f'🗑️ {borrados} roles borrados.')
 
     async def _dejar(self, interaction: discord.Interaction):
@@ -338,7 +343,7 @@ class Setup(commands.Cog):
             await asyncio.sleep(0.3)
 
             for nombre_canal, tipo_canal, tipo_perms in bloque['canales']:
-                ow = build_overwrites(tipo_perms, roles_map, everyone)
+                ow = overwrites_logs(guild) if tipo_perms == 'logs' else build_overwrites(tipo_perms, roles_map, everyone)
 
                 # Canales de stats: su nombre cambia → se buscan por el ID guardado en BD
                 clave_stat = STATS_CLAVES.get(nombre_canal)
@@ -398,6 +403,10 @@ class Setup(commands.Cog):
             embed.add_field(name=f'🏷️ Roles que no están en la lista ({len(roles_sobrantes)})',
                             value=lista[:1020], inline=False)
         embed.set_footer(text='Asigna el rol 👑 Liderazgo a tu usuario para tener acceso completo.')
+
+        anotar(guild, interaction.user, '🛠️ /setup-servidor',
+               f'{canales_creados} creados · {renombrados} renombrados · {roles_creados} roles creados · '
+               f'{len(sobrantes)} canales y {len(roles_sobrantes)} roles sobrantes')
 
         if sobrantes or roles_sobrantes:
             vista = LimpiezaView([c.id for c in sobrantes], cats_sobrantes, [r.id for r in roles_sobrantes])

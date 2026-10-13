@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from config import COLOR_BOT, ALIANZA_FULL, REINO
 from db import database as db
+from cogs.registro import anotar
 
 ZONA = ZoneInfo('Europe/Madrid')
 
@@ -132,6 +133,7 @@ class ConfirmarLimpiezaView(discord.ui.View):
             await interaction.edit_original_response(
                 content='❌ Me falta el permiso **Gestionar mensajes** en este canal.')
             return
+        anotar(interaction.guild, interaction.user, '🧹 Limpiar canal', f'{len(borrados)} mensajes borrados de {canal.mention}')
         await interaction.edit_original_response(content=f'✅ {len(borrados)} mensajes borrados de {canal.mention}.')
 
     @discord.ui.button(label='Cancelar', style=discord.ButtonStyle.secondary)
@@ -301,6 +303,9 @@ class Admin(commands.Cog):
     @app_commands.command(name='limpiar-canal', description='[ADMIN] Borra los mensajes de este canal (respeta anclados y tablones MGE)')
     @app_commands.checks.has_permissions(manage_messages=True)
     async def limpiar_canal(self, interaction: discord.Interaction):
+        if interaction.channel.name.split('│')[-1] == 'logs-bot':
+            await interaction.response.send_message('⛔ El canal de logs no se puede limpiar.', ephemeral=True)
+            return
         await interaction.response.send_message(
             f'🧹 ¿Borrar todos los mensajes de {interaction.channel.mention}?\n'
             'Se conservan los **mensajes anclados** 📌 (mensajes fijos, panel de reclutamiento…) '

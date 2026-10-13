@@ -7,6 +7,7 @@ from discord.ext import commands, tasks
 
 from config import COLOR_BOT, ALIANZA_TAG, ALIANZA_FULL, REINO
 from db import database as db
+from cogs.registro import anotar
 
 
 def parse_poder(s: str) -> int:
@@ -479,6 +480,8 @@ class PanelAdmin(discord.ui.LayoutView):
     async def render(self, interaction: discord.Interaction, aviso: str = ''):
         self.aviso = aviso
         await self.recargar()
+        if aviso and not aviso.startswith('⚠️'):
+            anotar(interaction.guild, interaction.user, f'MGE · {self.ev["nombre"]}', aviso)
         if interaction.response.is_done():
             await interaction.edit_original_response(view=self)
         else:
@@ -792,6 +795,9 @@ class CrearModal(discord.ui.Modal, title='🔥 Nuevo MGE'):
                                 if c.name.split('│')[-1] in ('mge', 'mge-inscripciones')), None)
         canal  = canal or interaction.channel
         tablon = await publicar_tablon(canal, evento_id)
+        anotar(guild, interaction.user, '🔥 MGE creado',
+               f'{self.nombre.value.strip()} · meta {fmt_poder(meta)} · {self.plazas.value} plazas · '
+               f'{TROPAS.get(self.tropa, TROPAS["todas"])[0]}')
 
         respuesta = f'✅ MGE creado y tablón publicado: {tablon.jump_url}\nGestiónalo con el botón ⚙️ del tablón.'
         if self.anunciar:

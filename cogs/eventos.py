@@ -9,6 +9,7 @@ from discord.ext import commands, tasks
 
 from config import COLOR_BOT, ALIANZA_TAG, REINO
 from db import database as db
+from cogs.registro import anotar
 
 ZONA = ZoneInfo('Europe/Madrid')
 
@@ -292,6 +293,7 @@ class EventoModal(discord.ui.Modal):
             return
 
         cuando = (f'📌 {fecha_dt.strftime("%d/%m/%Y")}' if puntual else f'🔁 {nombre_dias(dias_db)}')
+        anotar(interaction.guild, interaction.user, '📅 Eventos', f'{aviso} · 🕐 {hora} · {cuando}')
         await interaction.response.send_message(
             f'{aviso}\n🕐 **{hora}** · {cuando} · 🔔 {rol.mention if rol else "@everyone"}\n'
             '_Avisos automáticos 30 min antes y a la hora. Para editarlo, pulsa ⚙️ Gestionar en el calendario._',
@@ -322,6 +324,8 @@ class PanelEventos(discord.ui.LayoutView):
     async def render(self, interaction: discord.Interaction, aviso: str = ''):
         self.aviso = aviso
         await self.recargar()
+        if aviso and not aviso.startswith('⚠️'):
+            anotar(interaction.guild, interaction.user, '📅 Eventos', aviso)
         if interaction.response.is_done():
             await interaction.edit_original_response(view=self)
         else:

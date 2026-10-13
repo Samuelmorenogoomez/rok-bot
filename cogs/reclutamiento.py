@@ -5,6 +5,7 @@ from discord.ext import commands
 
 from config import COLOR_BOT, ALIANZA_FULL, ALIANZA_TAG, REINO
 from db import database as db
+from cogs.registro import anotar
 
 
 # ── Modal de solicitud ─────────────────────────────────────────────────────────
@@ -176,6 +177,7 @@ class RechazarModal(discord.ui.Modal, title='❌ Motivo del rechazo'):
         motivo = self.motivo.value or 'No se ha especificado un motivo.'
 
         await db.reclu_actualizar_estado(solicitud['id'], 'rechazada')
+        anotar(interaction.guild, interaction.user, '❌ Candidato rechazado', f'{solicitud["gobernador"]} · {motivo}')
 
         embed = discord.Embed(
             title='❌ Solicitud rechazada',
@@ -240,6 +242,7 @@ class DecisionView(discord.ui.View):
                 await member.add_roles(rol_nuevo, reason='Solicitud de ingreso aprobada')
 
         await db.reclu_actualizar_estado(solicitud['id'], 'aprobada')
+        anotar(interaction.guild, interaction.user, '✅ Candidato aprobado', solicitud['gobernador'])
 
         embed = discord.Embed(
             title='✅ ¡Solicitud aprobada!',
