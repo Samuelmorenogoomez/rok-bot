@@ -147,9 +147,30 @@ async def quien_borro(guild: discord.Guild, accion: discord.AuditLogAction, cana
     return None
 
 
+async def asegurar_canal(guild: discord.Guild):
+    """Crea el canal de logs si no existe y lo devuelve a 👑 ADMINISTRACIÓN si se movió (p. ej. al archivo)."""
+    canal     = await canal_logs(guild)
+    categoria = discord.utils.get(guild.categories, name=CATEGORIA_ADMIN)
+    if canal and categoria and canal.category != categoria:
+        await canal.edit(category=categoria, overwrites=overwrites_logs(guild), reason='Canal de logs en su sitio')
+    return canal
+
+
 class Registro(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        for guild in self.bot.guilds:
+            try:
+                canal = await asegurar_canal(guild)
+                print(f'[registro] Canal de logs listo en {guild.name}: #{canal.name}')
+            except discord.Forbidden:
+                print(f'[registro] Sin permiso para crear/mover el canal de logs en {guild.name} '
+                      '(hace falta "Gestionar canales"). Los registros se guardan igual en la BD.')
+            except Exception as e:
+                print(f'[registro] Error preparando el canal de logs en {guild.name}: {type(e).__name__}: {e}')
 
     # ── Comandos de admin terminados con éxito ────────────────────────────────
 
