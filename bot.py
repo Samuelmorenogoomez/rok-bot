@@ -13,7 +13,8 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+# Si Discord pide esperar más de 30 s, error en vez de dejar el bot parado esperando
+bot = commands.Bot(command_prefix='!', intents=intents, max_ratelimit_timeout=30)
 
 COGS = [
     'cogs.eventos',
