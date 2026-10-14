@@ -65,7 +65,8 @@ async def build_panel_embed(guild: discord.Guild) -> discord.Embed:
         lineas = []
         for ev in eventos[:4]:
             dias_str = ', '.join(DIAS_NOMBRE.get(d, d) for d in ev['dias'].split(','))
-            lineas.append(f'📅 **{ev["nombre"]}** — {ev["hora"]} ({dias_str})')
+            from cogs.eventos import fmt_horas, fecha_evento
+            lineas.append(f'📅 **{ev["nombre"]}** — {fmt_horas(ev["hora"], fecha_evento(ev), negrita=False)} ({dias_str})')
         embed.add_field(name='📅 Eventos programados', value='\n'.join(lineas), inline=False)
     else:
         embed.add_field(name='📅 Eventos', value='_Sin eventos programados_', inline=False)

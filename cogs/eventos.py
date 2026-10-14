@@ -11,7 +11,8 @@ from config import COLOR_BOT, ALIANZA_TAG, REINO
 from db import database as db
 from cogs.registro import anotar
 
-ZONA = ZoneInfo('Europe/Madrid')
+ZONA = ZoneInfo('Europe/Madrid')   # los eventos se guardan en hora de España peninsular
+UTC  = ZoneInfo('UTC')
 
 
 def fmt_poder(n: int) -> str:
@@ -88,6 +89,30 @@ def parse_fecha(texto: str) -> date | None:
     return fecha if fecha >= hoy else date(hoy.year + 1, dia_mes.month, dia_mes.day)
 
 
+def hora_utc(hora: str, fecha: date = None) -> str:
+    """Hora de España → '18:00 UTC' para esa fecha (tiene en cuenta el horario de verano/invierno)."""
+    fecha = fecha or datetime.now(ZONA).date()
+    horas, minutos = map(int, hora.split(':'))
+    utc = datetime(fecha.year, fecha.month, fecha.day, horas, minutos, tzinfo=ZONA).astimezone(UTC)
+    return utc.strftime('%H:%M') + ' UTC' + (' (día antes)' if utc.date() < fecha else '')
+
+
+def fecha_evento(ev) -> date:
+    """Fecha con la que calcular la UTC: la del evento si es puntual, hoy si se repite."""
+    if ev['puntual']:
+        try:
+            return datetime.strptime(ev['fecha_unica'], '%Y-%m-%d').date()
+        except ValueError:
+            pass
+    return datetime.now(ZONA).date()
+
+
+def fmt_horas(hora: str, fecha: date = None, negrita: bool = True) -> str:
+    """'20:00' → '**20:00** 🇪🇸 · 18:00 UTC'."""
+    principal = f'**{hora}**' if negrita else hora
+    return f'{principal} 🇪🇸 · {hora_utc(hora, fecha)}'
+
+
 # ── Calendario semanal ─────────────────────────────────────────────────────────
 
 async def build_semana_embed(guild_id: str) -> discord.Embed:
@@ -145,7 +170,7 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
 
         if ev_dia:
             tiene_algo = True
-            lineas = [f'🕐 **{ev["hora"]}** — {ev["nombre"]}' for ev in ev_dia]
+            lineas = [f'🕐 {fmt_horas(ev["hora"], dia_dt.date())} — {ev["nombre"]}' for ev in ev_dia]
             embed.add_field(
                 name=f'{emoji} {nombre_es} / {nombre_en} {fecha}{hoy}',
                 value='\n'.join(lineas),
@@ -155,7 +180,7 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
     if not tiene_algo:
         embed.description += '\n\n_No hay eventos, KvK ni MGE activos esta semana. / No active events, KvK or MGE this week._'
 
-    embed.set_footer(text=f'Actualizado / Updated · {now.strftime("%H:%M")} · Spain Time · ➕ ⚙️ solo liderazgo')
+    embed.set_footer(text=f'Horas en 🇪🇸 España peninsular · UTC — Actualizado {now.strftime("%H:%M")} 🇪🇸 · ➕ ⚙️ solo liderazgo')
     return embed
 
 
@@ -213,7 +238,7 @@ class EventoModal(discord.ui.Modal):
 
         self.nombre = discord.ui.TextInput(placeholder='Ej: Ark of Osiris', max_length=60,
                                            default=evento['nombre'] if evento else None)
-        self.hora   = discord.ui.TextInput(placeholder='Ej: 20:00 (hora de España)', max_length=5,
+        self.hora   = discord.ui.TextInput(placeholder='Ej: 20:00 — hora de España peninsular', max_length=5,
                                            default=evento['hora'] if evento else None)
         dias_actuales = set(evento['dias'].split(',')) if evento and not evento['puntual'] else set()
         self.dias = discord.ui.Select(
@@ -235,7 +260,8 @@ class EventoModal(discord.ui.Modal):
                                          required=False, default_values=rol_actual)
 
         self.add_item(discord.ui.Label(text='Nombre del evento', component=self.nombre))
-        self.add_item(discord.ui.Label(text='Hora', component=self.hora))
+        self.add_item(discord.ui.Label(text='Hora (España peninsular)', description='El bot calcula la UTC solo',
+                                       component=self.hora))
         self.add_item(discord.ui.Label(text='Días que se repite', description='Déjalo vacío si es un evento de un solo día',
                                        component=self.dias))
         self.add_item(discord.ui.Label(text='…o fecha concreta', description='Para un evento que no se repite',
@@ -293,9 +319,11 @@ class EventoModal(discord.ui.Modal):
             return
 
         cuando = (f'📌 {fecha_dt.strftime("%d/%m/%Y")}' if puntual else f'🔁 {nombre_dias(dias_db)}')
-        anotar(interaction.guild, interaction.user, '📅 Eventos', f'{aviso} · 🕐 {hora} · {cuando}')
+        fecha_ref = fecha_dt if puntual else None
+        anotar(interaction.guild, interaction.user, '📅 Eventos',
+               f'{aviso} · 🕐 {fmt_horas(hora, fecha_ref, negrita=False)} · {cuando}')
         await interaction.response.send_message(
-            f'{aviso}\n🕐 **{hora}** · {cuando} · 🔔 {rol.mention if rol else "@everyone"}\n'
+            f'{aviso}\n🕐 {fmt_horas(hora, fecha_ref)} · {cuando} · 🔔 {rol.mention if rol else "@everyone"}\n'
             '_Avisos automáticos 30 min antes y a la hora. Para editarlo, pulsa ⚙️ Gestionar en el calendario._',
             ephemeral=True,
         )
@@ -346,7 +374,8 @@ class PanelEventos(discord.ui.LayoutView):
 
         if self.eventos:
             opciones = [discord.SelectOption(
-                label=f'{e["hora"]} · {e["nombre"]}'[:100], value=str(e['id']),
+                label=f'{e["hora"]} 🇪🇸 · {hora_utc(e["hora"], fecha_evento(e))} · {e["nombre"]}'[:100],
+                value=str(e['id']),
                 description=cuando_evento(e)[:100], default=e['id'] == self.seleccionado,
             ) for e in self.eventos[:25]]
             sel = discord.ui.Select(placeholder='Elige un evento para editarlo o borrarlo', options=opciones)
@@ -360,7 +389,7 @@ class PanelEventos(discord.ui.LayoutView):
             cont.add_item(discord.ui.Separator())
             rol = f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
             cont.add_item(discord.ui.TextDisplay(
-                f'### {ev["nombre"]}\n🕐 **{ev["hora"]}** · {cuando_evento(ev)}\n'
+                f'### {ev["nombre"]}\n🕐 {fmt_horas(ev["hora"], fecha_evento(ev))} · {cuando_evento(ev)}\n'
                 f'📢 Avisos en <#{ev["canal_id"]}> · 🔔 {rol}'
             ))
             canal = discord.ui.ChannelSelect(
@@ -496,7 +525,7 @@ class Eventos(commands.Cog):
                     description=ev['descripcion'] or '',
                     color=COLOR_BOT,
                 )
-                embed.add_field(name='Hora / Time', value=f'{ev["hora"]} (Spain)')
+                embed.add_field(name='Hora / Time', value=fmt_horas(ev['hora'], now.date()))
                 await canal.send(content=rol_mention, embed=embed)
 
             elif current_time == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
