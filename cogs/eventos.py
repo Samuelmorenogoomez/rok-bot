@@ -139,7 +139,7 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
         embed.add_field(name=f'⚔️ KvK: {temporada["nombre"]}', value=valor, inline=False)
 
     # ── MGEs activos ──────────────────────────────────────────────────────────
-    mges = await db.mge_get_eventos_activos(guild_id)
+    mges = [m for m in await db.mge_get_eventos_activos(guild_id) if m['mensaje_id']]  # solo los que tienen tablón
     if mges:
         lineas_mge = []
         for m in mges:
@@ -201,8 +201,15 @@ async def refrescar_calendario(guild: discord.Guild):
             return
         except discord.NotFound:
             pass
+        except discord.Forbidden:
+            print(f'[eventos] Sin permiso para editar el calendario en #{canal.name} ({guild.name})')
+            return
 
-    msg = await canal.send(embed=embed, view=CalendarioView())
+    try:
+        msg = await canal.send(embed=embed, view=CalendarioView())
+    except discord.Forbidden:
+        print(f'[eventos] Sin permiso para publicar el calendario en #{canal.name} ({guild.name})')
+        return
     await db.set_config(str(guild.id), 'eventos_semana_mensaje', str(msg.id))
     try:
         await msg.pin()

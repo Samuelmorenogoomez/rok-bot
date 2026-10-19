@@ -10,6 +10,11 @@ from checks import solo_en_canal
 from db import database as db
 
 
+def refrescar_calendario(guild):
+    from cogs.eventos import refrescar_calendario_luego
+    refrescar_calendario_luego(guild)
+
+
 class ConfirmResetView(discord.ui.View):
     def __init__(self, temporada_id: int, temporada_nombre: str):
         super().__init__(timeout=30)
@@ -178,6 +183,7 @@ class Kvk(commands.Cog):
         temporada_id = await db.kvk_create(
             str(interaction.guild_id), nombre, historia, fecha_inicio, fecha_fin, es_recuperacion
         )
+        refrescar_calendario(interaction.guild)
 
         tipo_kvk = '🔄 KvK de Recuperación' if es_recuperacion else '⚔️ KvK Principal'
 
@@ -241,6 +247,7 @@ class Kvk(commands.Cog):
 
         stats = await db.kvk_get_import_ranking(temporada['id'])
         await db.kvk_end_active(str(interaction.guild_id))
+        refrescar_calendario(interaction.guild)
 
         await interaction.followup.send(f'✅ Temporada **{temporada["nombre"]}** cerrada.')
 
@@ -498,6 +505,7 @@ class Kvk(commands.Cog):
                 return
 
             n = await db.kvk_guerra_activar(temporada['id'])
+            refrescar_calendario(interaction.guild)
             if n == 0:
                 await interaction.response.send_message(
                     '⚠️ Guerra activada, pero no hay datos importados todavía. '
@@ -523,6 +531,7 @@ class Kvk(commands.Cog):
                 return
 
             deltas = await db.kvk_guerra_desactivar(temporada['id'])
+            refrescar_calendario(interaction.guild)
             if not deltas:
                 embed = discord.Embed(
                     title='🔴 Guerra desactivada',

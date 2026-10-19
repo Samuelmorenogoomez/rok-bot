@@ -177,6 +177,38 @@ async def purgar_antiguos(guild: discord.Guild, antes_ts: int) -> int:
     return borrados
 
 
+# Canales donde el bot publica o edita cosas que la gente usa
+CANALES_CLAVE = ('mge', 'calendario', 'miembros', 'anuncios', 'kvk-anuncios', 'bienvenida', 'reclutamiento', 'logs-bot')
+PERMISOS_NECESARIOS = {
+    'view_channel': 'Ver canal', 'send_messages': 'Enviar mensajes',
+    'embed_links': 'Insertar enlaces', 'read_message_history': 'Leer historial',
+}
+
+
+async def revisar_permisos(guild: discord.Guild):
+    """Al arrancar: si al bot le falta algún permiso en sus canales, se apunta en el log."""
+    problemas = []
+    for canal in guild.text_channels:
+        if canal.name.split('│')[-1] not in CANALES_CLAVE:
+            continue
+        permisos = canal.permissions_for(guild.me)
+        faltan = [nombre for clave, nombre in PERMISOS_NECESARIOS.items() if not getattr(permisos, clave)]
+        if faltan:
+            problemas.append(f'#{canal.name}: falta {", ".join(faltan)}')
+    for problema in problemas:
+        print(f'[registro] Permisos: {problema}')
+        anotar(guild, guild.me, '⚠️ Al bot le faltan permisos',
+               f'{problema} · arréglalo con /setup-servidor o dando esos permisos al rol del bot')
+
+
+async def cerrar_mge_sin_tablon(guild: discord.Guild):
+    """Un MGE activo sin tablón no lo puede usar nadie (quedan de creaciones que fallaron): se cierra."""
+    for ev in await db.mge_get_eventos_activos(str(guild.id)):
+        if not ev['mensaje_id']:
+            await db.mge_cerrar_evento(str(guild.id), int(ev['id']))
+            anotar(guild, guild.me, '🧹 MGE sin tablón cerrado', f'#{ev["id"]} {ev["nombre"]} (no se llegó a publicar)')
+
+
 async def asegurar_canal(guild: discord.Guild):
     """Crea el canal de logs si no existe y lo devuelve a 👑 ADMINISTRACIÓN si se movió (p. ej. al archivo)."""
     canal     = await canal_logs(guild)
@@ -220,6 +252,11 @@ class Registro(commands.Cog):
                       '(hace falta "Gestionar canales"). Los registros se guardan igual en la BD.')
             except Exception as e:
                 print(f'[registro] Error preparando el canal de logs en {guild.name}: {type(e).__name__}: {e}')
+            try:
+                await revisar_permisos(guild)
+                await cerrar_mge_sin_tablon(guild)
+            except Exception as e:
+                print(f'[registro] Error en la revisión de arranque de {guild.name}: {type(e).__name__}: {e}')
 
     # ── Comandos de admin terminados con éxito ────────────────────────────────
 

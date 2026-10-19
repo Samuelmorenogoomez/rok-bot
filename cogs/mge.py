@@ -193,6 +193,14 @@ def programar_refresco(client: discord.Client, evento_id: int, espera: float = 1
         await asyncio.sleep(espera)
         _refrescos_pendientes.discard(evento_id)
         await refrescar_tablon(client, evento_id)
+        ev = await db.mge_get_evento(evento_id)
+        guild = client.get_guild(int(ev['guild_id'])) if ev else None
+        if guild:
+            from cogs.eventos import refrescar_calendario
+            try:
+                await refrescar_calendario(guild)
+            except discord.HTTPException as e:
+                print(f'[mge] No se pudo actualizar el calendario: {e}')
 
     en_segundo_plano(_tarea())
 
@@ -795,7 +803,20 @@ class CrearModal(discord.ui.Modal, title='🔥 Nuevo MGE'):
         canal  = canal or next((c for c in guild.text_channels
                                 if c.name.split('│')[-1] in ('mge', 'mge-inscripciones')), None)
         canal  = canal or interaction.channel
-        tablon = await publicar_tablon(canal, evento_id)
+        try:
+            tablon = await publicar_tablon(canal, evento_id)
+        except discord.HTTPException as e:
+            await db.mge_cerrar_evento(str(guild.id), evento_id)  # no dejar un MGE activo sin tablón
+            print(f'[mge] No se pudo publicar el tablón en #{canal.name}: {e}')
+            await interaction.followup.send(
+                f'❌ No he podido publicar el tablón en {canal.mention}: **me falta permiso para ver o escribir '
+                f'en ese canal**. No se ha creado el MGE.\n'
+                'Arréglalo con `/setup-servidor` (le da al bot acceso a sus canales) o dando al rol del bot '
+                'permiso de *Ver canal* y *Enviar mensajes* en ese canal, y vuelve a crearlo.',
+                ephemeral=True,
+            )
+            return
+        programar_refresco(interaction.client, evento_id)  # también actualiza el calendario
         anotar(guild, interaction.user, '🔥 MGE creado',
                f'{self.nombre.value.strip()} · meta {fmt_poder(meta)} · {self.plazas.value} plazas · '
                f'{TROPAS.get(self.tropa, TROPAS["todas"])[0]}')
