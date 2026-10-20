@@ -80,7 +80,7 @@ async def init_db():
                 UNIQUE (temporada_id, governor_id)
             );
 
-            -- Guerras con capturas de Kill Points: activa → cierre (plazo para la captura final) → cerrada
+            -- Guerras contadas con el CSV de ROKSTATS: activa (foto inicial) → cerrada (foto final)
             CREATE TABLE IF NOT EXISTS kvk_guerras (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id        TEXT    NOT NULL,
@@ -90,22 +90,23 @@ async def init_db():
                 inicio_ts       INTEGER NOT NULL,
                 terminada_por   TEXT    DEFAULT '',
                 fin_ts          INTEGER DEFAULT 0,
-                limite_ts       INTEGER DEFAULT 0
+                csv_inicial     TEXT    DEFAULT '',
+                csv_final       TEXT    DEFAULT ''
             );
 
-            CREATE TABLE IF NOT EXISTS kvk_capturas (
-                guerra_id      INTEGER NOT NULL,
-                guild_id       TEXT    NOT NULL,
-                user_id        TEXT    NOT NULL,
-                fase           TEXT    NOT NULL,
-                kp             INTEGER NOT NULL,
-                imagen_url     TEXT    DEFAULT '',
-                revision_canal TEXT    DEFAULT '',
-                revision_msg   TEXT    DEFAULT '',
-                corregido_por  TEXT    DEFAULT '',
-                ts             INTEGER NOT NULL,
-                PRIMARY KEY (guerra_id, user_id, fase)
+            -- Kill Points de cada gobernador en el CSV inicial y en el final de cada guerra
+            CREATE TABLE IF NOT EXISTS kvk_guerra_datos (
+                guerra_id    INTEGER NOT NULL,
+                fase         TEXT    NOT NULL,
+                governor_id  TEXT    NOT NULL,
+                nombre       TEXT    NOT NULL,
+                kp           INTEGER NOT NULL,
+                poder        INTEGER DEFAULT 0,
+                PRIMARY KEY (guerra_id, fase, governor_id)
             );
+
+            -- Sistema de capturas sustituido por el CSV (2026-10-20)
+            DROP TABLE IF EXISTS kvk_capturas;
 
             CREATE TABLE IF NOT EXISTS kvk_stats (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -268,6 +269,13 @@ async def init_db():
         ):
             try:
                 await db.execute(f'ALTER TABLE kvk_temporadas ADD COLUMN {columna}')
+                await db.commit()
+            except Exception:
+                pass
+        # Migración: CSV de ROKSTATS en kvk_guerras
+        for columna in ('csv_inicial TEXT DEFAULT \'\'', 'csv_final TEXT DEFAULT \'\''):
+            try:
+                await db.execute(f'ALTER TABLE kvk_guerras ADD COLUMN {columna}')
                 await db.commit()
             except Exception:
                 pass
@@ -623,17 +631,24 @@ async def kvk_get_import_ranking(temporada_id: int) -> list:
 
 
 async def kvk_clear_guerras(temporada_id: int):
-    """Borra las guerras cerradas de la temporada y sus capturas."""
+    """Borra las guerras cerradas de la temporada y sus datos."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "DELETE FROM kvk_capturas WHERE guerra_id IN "
+            "DELETE FROM kvk_guerra_datos WHERE guerra_id IN "
             "(SELECT id FROM kvk_guerras WHERE temporada_id=? AND estado='cerrada')", (temporada_id,)
         )
         await db.execute("DELETE FROM kvk_guerras WHERE temporada_id=? AND estado='cerrada'", (temporada_id,))
         await db.commit()
 
 
-# ─── Guerras (capturas de Kill Points) ────────────────────────────────────────
+# ─── Guerras (CSV de ROKSTATS) ────────────────────────────────────────────────
+
+async def _insertar_datos(db, guerra_id: int, fase: str, filas: list):
+    await db.executemany(
+        'INSERT OR REPLACE INTO kvk_guerra_datos (guerra_id, fase, governor_id, nombre, kp, poder) VALUES (?,?,?,?,?,?)',
+        [(guerra_id, fase, f['governor_id'], f['nombre'], f['kp'], f['poder']) for f in filas]
+    )
+
 
 async def guerra_get(guerra_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -643,58 +658,61 @@ async def guerra_get(guerra_id: int):
 
 
 async def guerra_get_abierta(guild_id: str):
-    """Guerra activa o en plazo de captura final (como mucho hay una)."""
+    """Guerra activa (como mucho hay una)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM kvk_guerras WHERE guild_id=? AND estado IN ('activa','cierre') ORDER BY id DESC LIMIT 1",
+            "SELECT * FROM kvk_guerras WHERE guild_id=? AND estado='activa' ORDER BY id DESC LIMIT 1",
             (guild_id,)
         )
         return await cursor.fetchone()
 
 
-async def guerra_crear(guild_id: str, temporada_id: int, user_id: str, ts: int) -> int:
+async def guerra_crear(guild_id: str, temporada_id: int, user_id: str, ts: int, csv_nombre: str, filas: list) -> int:
+    """Crea la guerra con la foto inicial del CSV."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            'INSERT INTO kvk_guerras (guild_id, temporada_id, activada_por, inicio_ts) VALUES (?,?,?,?)',
-            (guild_id, temporada_id, user_id, ts)
+            'INSERT INTO kvk_guerras (guild_id, temporada_id, activada_por, inicio_ts, csv_inicial) VALUES (?,?,?,?,?)',
+            (guild_id, temporada_id, user_id, ts, csv_nombre)
         )
+        guerra_id = cursor.lastrowid
+        await _insertar_datos(db, guerra_id, 'inicial', filas)
         await db.execute('UPDATE kvk_temporadas SET guerra_activa=1 WHERE id=?', (temporada_id,))
         await db.commit()
-        return cursor.lastrowid
+        return guerra_id
 
 
-async def guerra_iniciar_cierre(guerra_id: int, user_id: str, ts: int, limite_ts: int) -> bool:
+async def guerra_cerrar(guerra_id: int, user_id: str, ts: int, csv_nombre: str, filas: list) -> bool:
+    """Guarda la foto final del CSV y cierra la guerra."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "UPDATE kvk_guerras SET estado='cierre', terminada_por=?, fin_ts=?, limite_ts=? "
+            "UPDATE kvk_guerras SET estado='cerrada', terminada_por=?, fin_ts=?, csv_final=? "
             "WHERE id=? AND estado='activa'",
-            (user_id, ts, limite_ts, guerra_id)
+            (user_id, ts, csv_nombre, guerra_id)
         )
-        await db.commit()
-        return cursor.rowcount > 0
-
-
-async def guerra_cerrar(guerra_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "UPDATE kvk_guerras SET estado='cerrada' WHERE id=? AND estado='cierre'", (guerra_id,)
-        )
+        if cursor.rowcount == 0:
+            return False
+        await _insertar_datos(db, guerra_id, 'final', filas)
         await db.execute(
             'UPDATE kvk_temporadas SET guerra_activa=0 WHERE id=(SELECT temporada_id FROM kvk_guerras WHERE id=?)',
             (guerra_id,)
         )
         await db.commit()
-        return cursor.rowcount > 0
+        return True
 
 
-async def guerra_pendientes_cierre(ahora_ts: int) -> list:
+async def guerra_cancelar(guerra_id: int) -> bool:
+    """Anula una guerra activa sin contar nada."""
     async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM kvk_guerras WHERE estado='cierre' AND limite_ts<=?", (ahora_ts,)
-        )
-        return await cursor.fetchall()
+        cursor = await db.execute("SELECT temporada_id FROM kvk_guerras WHERE id=? AND estado='activa'", (guerra_id,))
+        fila = await cursor.fetchone()
+        if not fila:
+            return False
+        await db.execute('DELETE FROM kvk_guerra_datos WHERE guerra_id=?', (guerra_id,))
+        await db.execute('DELETE FROM kvk_guerras WHERE id=?', (guerra_id,))
+        await db.execute('UPDATE kvk_temporadas SET guerra_activa=0 WHERE id=?', (fila[0],))
+        await db.commit()
+        return True
 
 
 async def guerra_numero(guerra) -> int:
@@ -707,79 +725,35 @@ async def guerra_numero(guerra) -> int:
         return (await cursor.fetchone())[0]
 
 
-async def captura_get(guerra_id: int, user_id: str, fase: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            'SELECT * FROM kvk_capturas WHERE guerra_id=? AND user_id=? AND fase=?',
-            (guerra_id, user_id, fase)
-        )
-        return await cursor.fetchone()
-
-
-async def captura_get_por_revision(mensaje_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute('SELECT * FROM kvk_capturas WHERE revision_msg=?', (mensaje_id,))
-        return await cursor.fetchone()
-
-
-async def captura_max_kp_previo(guild_id: str, user_id: str, guerra_id: int) -> int:
-    """KP más alto que el jugador haya enviado en otras guerras (los KP nunca bajan)."""
+async def guerra_contar_datos(guerra_id: int, fase: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            'SELECT MAX(kp) FROM kvk_capturas WHERE guild_id=? AND user_id=? AND guerra_id<>?',
-            (guild_id, user_id, guerra_id)
-        )
-        return (await cursor.fetchone())[0] or 0
-
-
-async def captura_guardar(guerra_id: int, guild_id: str, user_id: str, fase: str, kp: int,
-                          imagen_url: str, revision_canal: str, revision_msg: str, ts: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            INSERT INTO kvk_capturas
-                (guerra_id, guild_id, user_id, fase, kp, imagen_url, revision_canal, revision_msg, ts)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(guerra_id, user_id, fase) DO UPDATE SET
-                kp             = excluded.kp,
-                imagen_url     = excluded.imagen_url,
-                revision_canal = excluded.revision_canal,
-                revision_msg   = excluded.revision_msg,
-                corregido_por  = '',
-                ts             = excluded.ts
-        ''', (guerra_id, guild_id, user_id, fase, kp, imagen_url, revision_canal, revision_msg, ts))
-        await db.commit()
-
-
-async def captura_corregir(guerra_id: int, user_id: str, fase: str, kp: int, corregido_por: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            'UPDATE kvk_capturas SET kp=?, corregido_por=? WHERE guerra_id=? AND user_id=? AND fase=?',
-            (kp, corregido_por, guerra_id, user_id, fase)
-        )
-        await db.commit()
-
-
-async def guerra_contar_capturas(guerra_id: int, fase: str) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            'SELECT COUNT(*) FROM kvk_capturas WHERE guerra_id=? AND fase=?', (guerra_id, fase)
+            'SELECT COUNT(*) FROM kvk_guerra_datos WHERE guerra_id=? AND fase=?', (guerra_id, fase)
         )
         return (await cursor.fetchone())[0]
 
 
+async def guerra_get_datos(guerra_id: int, fase: str) -> dict:
+    """{governor_id: kp} de una fase."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            'SELECT governor_id, kp FROM kvk_guerra_datos WHERE guerra_id=? AND fase=?', (guerra_id, fase)
+        )
+        return {r[0]: r[1] for r in await cursor.fetchall()}
+
+
 async def guerra_resultados(guerra_id: int) -> list:
-    """Una fila por jugador con captura inicial: kp_inicial, kp_final (None si no la subió) y gobernador."""
+    """Gobernadores presentes en los dos CSV, con sus KP hechos, de más a menos."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute('''
-            SELECT i.user_id, i.kp AS kp_inicial, f.kp AS kp_final, COALESCE(m.gobernador, '') AS gobernador
-            FROM kvk_capturas i
-            LEFT JOIN kvk_capturas f
-                   ON f.guerra_id = i.guerra_id AND f.user_id = i.user_id AND f.fase = 'final'
-            LEFT JOIN miembros m ON m.guild_id = i.guild_id AND m.user_id = i.user_id
+            SELECT f.governor_id, f.nombre, i.kp AS kp_inicial, f.kp AS kp_final, f.poder,
+                   MAX(f.kp - i.kp, 0) AS ganados
+            FROM kvk_guerra_datos i
+            JOIN kvk_guerra_datos f
+              ON f.guerra_id = i.guerra_id AND f.governor_id = i.governor_id AND f.fase = 'final'
             WHERE i.guerra_id = ? AND i.fase = 'inicial'
+            ORDER BY ganados DESC
         ''', (guerra_id,))
         return await cursor.fetchall()
 
@@ -789,14 +763,17 @@ async def guerra_ranking_temporada(temporada_id: int) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute('''
-            SELECT i.user_id, COALESCE(m.gobernador, '') AS gobernador,
-                   SUM(MAX(f.kp - i.kp, 0)) AS ganados, COUNT(*) AS guerras
+            SELECT f.governor_id,
+                   (SELECT d.nombre FROM kvk_guerra_datos d
+                     WHERE d.governor_id = f.governor_id ORDER BY d.guerra_id DESC LIMIT 1) AS nombre,
+                   SUM(MAX(f.kp - i.kp, 0)) AS ganados,
+                   SUM(CASE WHEN f.kp > i.kp THEN 1 ELSE 0 END) AS guerras
             FROM kvk_guerras g
-            JOIN kvk_capturas i ON i.guerra_id = g.id AND i.fase = 'inicial'
-            JOIN kvk_capturas f ON f.guerra_id = g.id AND f.user_id = i.user_id AND f.fase = 'final'
-            LEFT JOIN miembros m ON m.guild_id = i.guild_id AND m.user_id = i.user_id
+            JOIN kvk_guerra_datos i ON i.guerra_id = g.id AND i.fase = 'inicial'
+            JOIN kvk_guerra_datos f ON f.guerra_id = g.id AND f.governor_id = i.governor_id AND f.fase = 'final'
             WHERE g.temporada_id = ? AND g.estado = 'cerrada'
-            GROUP BY i.user_id
+            GROUP BY f.governor_id
+            HAVING ganados > 0
             ORDER BY ganados DESC
         ''', (temporada_id,))
         return await cursor.fetchall()

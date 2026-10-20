@@ -124,9 +124,9 @@ def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.
 
     # Top 3 KP hechos en guerra (capturas)
     if guerra:
-        from cogs.guerra import fmt, nombre_jugador
+        from cogs.guerra import fmt
         lineas_guerra = [
-            f'{medallas[i]} **{nombre_jugador(guild, g)}** — `+{fmt(g["ganados"])}` KP'
+            f'{medallas[i]} **{g["nombre"]}** — `+{fmt(g["ganados"])}` KP'
             for i, g in enumerate(guerra[:3])
         ]
         embed.add_field(name='🔥 Top KP en guerra', value='\n'.join(lineas_guerra), inline=False)

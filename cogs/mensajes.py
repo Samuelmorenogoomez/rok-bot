@@ -224,8 +224,10 @@ async def msg_kvk(canal: discord.TextChannel):
     embed.add_field(
         name='⚔️ Bajas en guerra / War kills',
         value=(
-            'Las bajas de cada guerra se cuentan con capturas de vuestros Kill Points: usa el **panel de guerra** de abajo.\n'
-            '_War kills are counted with screenshots of your Kill Points: use the **war panel** below._'
+            'Las bajas de cada guerra se cuentan con el CSV de ROKSTATS que sube un R4 al empezar y al terminar: '
+            'mira el **panel de guerra** de abajo.\n'
+            '_War kills are counted with the ROKSTATS CSV an R4 uploads at the start and at the end: '
+            'see the **war panel** below._'
         ),
         inline=False,
     )

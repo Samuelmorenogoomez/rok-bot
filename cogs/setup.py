@@ -86,7 +86,6 @@ ESTRUCTURA = [
         'canales': [
             ('💬│chat-admin',    'text',  'admin'),
             ('📋│logs-bot',      'text',  'logs'),    # registro de acciones de admin (solo lectura)
-            ('📸│kvk-capturas',  'text',  'logs'),    # capturas de Kill Points de las guerras, para revisar
             ('🎙️│voz-admin',     'voice', 'admin'),
         ],
     },
