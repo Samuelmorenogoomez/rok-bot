@@ -25,6 +25,7 @@ class ConfirmResetView(discord.ui.View):
     async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await db.kvk_clear_import(self.temporada_id)
         await db.kvk_clear_stats(self.temporada_id)
+        await db.kvk_clear_guerras(self.temporada_id)
         self.stop()
         await interaction.response.edit_message(
             embed=discord.Embed(
@@ -83,7 +84,7 @@ def parse_excel(data: bytes) -> list[dict]:
     return jugadores
 
 
-def build_recap_embed(temporada, stats: list) -> discord.Embed:
+def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.Guild = None) -> discord.Embed:
     medallas = ['🥇', '🥈', '🥉']
     dkp_ranking = sorted(stats, key=lambda s: s['dkp'], reverse=True)
 
@@ -120,6 +121,15 @@ def build_recap_embed(temporada, stats: list) -> discord.Embed:
             for i, s in enumerate(top_dkp)
         ]
         embed.add_field(name='💰 Top DKP', value='\n'.join(lineas_dkp), inline=False)
+
+    # Top 3 KP hechos en guerra (capturas)
+    if guerra:
+        from cogs.guerra import fmt, nombre_jugador
+        lineas_guerra = [
+            f'{medallas[i]} **{nombre_jugador(guild, g)}** — `+{fmt(g["ganados"])}` KP'
+            for i, g in enumerate(guerra[:3])
+        ]
+        embed.add_field(name='🔥 Top KP en guerra', value='\n'.join(lineas_guerra), inline=False)
 
     # Estadísticas globales de la alianza
     embed.add_field(
@@ -172,6 +182,13 @@ class Kvk(commands.Cog):
         except ValueError:
             await interaction.response.send_message(
                 '❌ Formato de fecha incorrecto. Usa `dd/mm/aaaa` (ej: 15/07/2026).',
+                ephemeral=True,
+            )
+            return
+
+        if await db.guerra_get_abierta(str(interaction.guild_id)):
+            await interaction.response.send_message(
+                '❌ Hay una guerra en curso. Termínala desde el panel de guerra antes de empezar otra temporada.',
                 ephemeral=True,
             )
             return
@@ -242,16 +259,25 @@ class Kvk(commands.Cog):
         if not temporada:
             await interaction.response.send_message('❌ No hay ninguna temporada activa.', ephemeral=True)
             return
+        if await db.guerra_get_abierta(str(interaction.guild_id)):
+            await interaction.response.send_message(
+                '❌ Hay una guerra en curso. Termínala desde el panel de guerra antes de cerrar la temporada.',
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.defer()
 
-        stats = await db.kvk_get_import_ranking(temporada['id'])
+        stats  = await db.kvk_get_import_ranking(temporada['id'])
+        guerra = await db.guerra_ranking_temporada(temporada['id'])
         await db.kvk_end_active(str(interaction.guild_id))
         refrescar_calendario(interaction.guild)
+        from cogs.guerra import refrescar_panel
+        await refrescar_panel(interaction.guild)
 
         await interaction.followup.send(f'✅ Temporada **{temporada["nombre"]}** cerrada.')
 
-        if not stats:
+        if not stats and not guerra:
             return
 
         # Buscar canal de recap: primero config guardada, luego kvk-anuncios por nombre
@@ -265,7 +291,7 @@ class Kvk(commands.Cog):
                 None,
             )
         if canal:
-            await canal.send(embed=build_recap_embed(temporada, stats))
+            await canal.send(embed=build_recap_embed(temporada, stats, guerra, interaction.guild))
 
     @app_commands.command(name='kvk-importar', description='[ADMIN] Importa estadísticas KvK desde el Excel de heroscroll.com')
     @app_commands.describe(archivo='Archivo .xlsx exportado de heroscroll.com/rok/kvk-dashboard')
@@ -440,7 +466,8 @@ class Kvk(commands.Cog):
                 f'**{temporada["nombre"]}**\n\n'
                 f'Esto eliminará:\n'
                 f'• Todos los datos importados del Excel\n'
-                f'• Todos los registros manuales\n\n'
+                f'• Todos los registros manuales\n'
+                f'• Las guerras cerradas y sus capturas de Kill Points\n\n'
                 f'La temporada seguirá activa para que puedas volver a importar.'
             ),
             color=0xFF4444,
@@ -486,116 +513,6 @@ class Kvk(commands.Cog):
         embed.set_footer(text=f'{len(ranking)} gobernadores con DKP · {ALIANZA_TAG} · Reino {REINO}')
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name='kvk-guerra', description='[ADMIN] Activa o desactiva el modo guerra para contabilizar bajas')
-    @app_commands.describe(estado='Activar inicia el conteo, desactivar calcula y acumula las bajas de esta ventana')
-    @app_commands.choices(estado=[
-        app_commands.Choice(name='🟢 Activar guerra', value='activar'),
-        app_commands.Choice(name='🔴 Desactivar guerra', value='desactivar'),
-    ])
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def kvk_guerra(self, interaction: discord.Interaction, estado: str):
-        temporada = await db.kvk_get_active(str(interaction.guild_id))
-        if not temporada:
-            await interaction.response.send_message('❌ No hay ninguna temporada KvK activa.', ephemeral=True)
-            return
-
-        if estado == 'activar':
-            if temporada['guerra_activa']:
-                await interaction.response.send_message('ℹ️ La guerra ya estaba activa.', ephemeral=True)
-                return
-
-            n = await db.kvk_guerra_activar(temporada['id'])
-            refrescar_calendario(interaction.guild)
-            if n == 0:
-                await interaction.response.send_message(
-                    '⚠️ Guerra activada, pero no hay datos importados todavía. '
-                    'Usa `/kvk-importar` antes de activar para tener una línea base correcta.',
-                )
-                return
-
-            embed = discord.Embed(
-                title='🟢 ¡Guerra activada!',
-                description=(
-                    f'**{temporada["nombre"]}**\n\n'
-                    f'A partir de ahora **solo cuentan las bajas que se hagan durante la guerra**.\n'
-                    f'Cuando termine, importa el Excel actualizado y usa `/kvk-guerra desactivar` para contabilizarlas.'
-                ),
-                color=0x2ECC71,
-            )
-            embed.set_footer(text=f'Línea base guardada: {n} gobernadores · {ALIANZA_TAG}')
-            await interaction.response.send_message(embed=embed)
-
-        else:  # desactivar
-            if not temporada['guerra_activa']:
-                await interaction.response.send_message('ℹ️ La guerra no estaba activa.', ephemeral=True)
-                return
-
-            deltas = await db.kvk_guerra_desactivar(temporada['id'])
-            refrescar_calendario(interaction.guild)
-            if not deltas:
-                embed = discord.Embed(
-                    title='🔴 Guerra desactivada',
-                    description='No se detectaron bajas nuevas. Asegúrate de haber importado el Excel actualizado con `/kvk-importar` antes de desactivar.',
-                    color=0xE74C3C,
-                )
-                await interaction.response.send_message(embed=embed)
-                return
-
-            deltas_ordenados = sorted(deltas, key=lambda d: d['kills_t4'] + d['kills_t5'], reverse=True)
-            medallas = ['🥇', '🥈', '🥉']
-            lineas = []
-            for i, d in enumerate(deltas_ordenados[:10]):
-                total = d['kills_t4'] + d['kills_t5']
-                pos = medallas[i] if i < 3 else f'**{i+1}.**'
-                lineas.append(f'{pos} **{d["governor_name"]}** — `{total:,}` kills · 💀 `{d["muertes"]:,}`')
-
-            embed = discord.Embed(
-                title='🔴 Guerra desactivada — bajas contabilizadas',
-                description='\n'.join(lineas),
-                color=0xE74C3C,
-            )
-            if len(deltas_ordenados) > 10:
-                embed.set_footer(text=f'Mostrando 10 de {len(deltas_ordenados)} · /kvk-bajas-guerra para ver todo · {ALIANZA_TAG}')
-            else:
-                embed.set_footer(text=f'Usa /kvk-bajas-guerra para ver el acumulado completo · {ALIANZA_TAG}')
-            await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name='kvk-bajas-guerra', description='Ranking de bajas contabilizadas solo durante ventanas de guerra activa')
-    @solo_en_canal('kvk')
-    async def kvk_bajas_guerra(self, interaction: discord.Interaction):
-        temporada = await db.kvk_get_active(str(interaction.guild_id))
-        if not temporada:
-            await interaction.response.send_message('❌ No hay temporada activa.', ephemeral=True)
-            return
-
-        acumuladas = await db.kvk_get_bajas_acumuladas(temporada['id'])
-        if not acumuladas:
-            await interaction.response.send_message(
-                '📋 Todavía no hay bajas contabilizadas. Se acumulan cada vez que se desactiva el modo guerra.',
-                ephemeral=True,
-            )
-            return
-
-        medallas = ['🥇', '🥈', '🥉']
-        lineas = []
-        for i, a in enumerate(acumuladas):
-            total = a['kills_t4'] + a['kills_t5']
-            pos = medallas[i] if i < 3 else f'**{i+1}.**'
-            lineas.append(
-                f'{pos} **{a["governor_name"]}** — '
-                f'T4: `{a["kills_t4"]:,}` · T5: `{a["kills_t5"]:,}` · '
-                f'Total: `{total:,}` · 💀 `{a["muertes"]:,}`'
-            )
-
-        estado_guerra = '🟢 ACTIVA' if temporada['guerra_activa'] else '🔴 inactiva'
-        embed = discord.Embed(
-            title=f'💀 Bajas de guerra acumuladas — {temporada["nombre"]}',
-            description='\n'.join(lineas[:20]),
-            color=0xE74C3C,
-        )
-        embed.set_footer(text=f'Guerra: {estado_guerra} · Solo cuentan bajas hechas con guerra activa · {ALIANZA_TAG}')
-        await interaction.response.send_message(embed=embed)
-
     @app_commands.command(name='kvk-canal-recap', description='[ADMIN] Configura el canal donde se publica el resumen al cerrar el KvK')
     @app_commands.describe(canal='Canal donde se publicará el resumen de fin de temporada')
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -611,7 +528,6 @@ class Kvk(commands.Cog):
     @kvk_importar.error
     @kvk_reset.error
     @kvk_ranking.error
-    @kvk_guerra.error
     @kvk_canal_recap.error
     async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):

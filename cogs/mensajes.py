@@ -221,8 +221,21 @@ async def msg_kvk(canal: discord.TextChannel):
         ),
         inline=False,
     )
+    embed.add_field(
+        name='⚔️ Bajas en guerra / War kills',
+        value=(
+            'Las bajas de cada guerra se cuentan con capturas de vuestros Kill Points: usa el **panel de guerra** de abajo.\n'
+            '_War kills are counted with screenshots of your Kill Points: use the **war panel** below._'
+        ),
+        inline=False,
+    )
     embed.set_footer(text=f'{ALIANZA_FULL} · Reino {REINO}')
     return await canal.send(embed=embed)
+
+
+async def msg_panel_guerra(canal: discord.TextChannel):
+    from cogs.guerra import publicar_panel
+    return await publicar_panel(canal)
 
 
 async def msg_encuestas(canal: discord.TextChannel):
@@ -421,7 +434,7 @@ async def msg_scouting(canal: discord.TextChannel):
 MENSAJES_POR_CANAL = {
     'bienvenida':    [msg_bienvenida, msg_reglas, msg_comandos_bot],
     'miembros':      [msg_miembros],
-    'kvk-stats':     [msg_kvk],
+    'kvk-stats':     [msg_kvk, msg_panel_guerra],
     'encuestas':     [msg_encuestas],
     'ark':           [msg_ark],
     'kvk-anuncios':  [msg_kvk_anuncios],

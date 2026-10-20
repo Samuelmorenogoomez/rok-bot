@@ -20,6 +20,7 @@ COGS = [
     'cogs.eventos',
     'cogs.miembros',
     'cogs.kvk',
+    'cogs.guerra',
     'cogs.encuestas',
     'cogs.admin',
     'cogs.bienvenida',
