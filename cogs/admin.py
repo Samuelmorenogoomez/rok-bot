@@ -42,14 +42,19 @@ async def build_panel_embed(guild: discord.Guild) -> discord.Embed:
     # ── KvK activo ────────────────────────────────────────────────────────────
     temporada = await db.kvk_get_active(str(guild.id))
     if temporada:
-        ranking = await db.kvk_get_ranking(temporada['id'])
+        from cogs.guerra import fmt
         medallas = ['🥇', '🥈', '🥉']
-        lineas = []
-        for i, s in enumerate(ranking[:3]):
-            total = s['kills_t4'] + s['kills_t5']
-            lineas.append(f'{medallas[i]} **{s["username"]}** — {total:,} kills')
+        # Primero los KP de las guerras (CSV de ROKSTATS); si aún no hay, el Excel importado de heroscroll
+        guerra = await db.guerra_ranking_temporada(temporada['id'])
+        if guerra:
+            lineas = [f'{medallas[i]} **{g["nombre"]}** — `+{fmt(g["ganados"])}` KP en guerra'
+                      for i, g in enumerate(guerra[:3])]
+        else:
+            importados = await db.kvk_get_import_ranking(temporada['id'])
+            lineas = [f'{medallas[i]} **{s["governor_name"]}** — {s["kills_t4"] + s["kills_t5"]:,} kills'
+                      for i, s in enumerate(importados[:3])]
         if not lineas:
-            lineas = ['_Nadie ha registrado bajas aún_']
+            lineas = ['_Todavía no hay datos de este KvK_']
         embed.add_field(
             name=f'⚔️ KvK: {temporada["nombre"]}',
             value='\n'.join(lineas),
