@@ -212,12 +212,12 @@ def _contra_meta(hecho: int, meta: int) -> str:
 def linea_tablero(pos: int, s, grupos: list[dict]) -> str:
     """Una línea por gobernador, con las metas de su grupo de poder (y el icono del grupo si hay varios)."""
     from cogs.mge import fmt_poder
-    from cogs.guerra import indice_grupo, ICONOS_GRUPO
+    from cogs.guerra import indice_grupo, icono_grupo
     medalla = ['🥇', '🥈', '🥉'][pos - 1] if pos <= 3 else f'`{pos:>3}.`'
     nombre  = discord.utils.escape_markdown(s['governor_name'])
     i       = indice_grupo(grupos, s)
     g       = grupos[i] if i is not None else {'kp': 0, 'aclamacion': 0}
-    icono   = f' {ICONOS_GRUPO[i]}' if len(grupos) > 1 else ''
+    icono   = f' {icono_grupo(grupos, i)}' if len(grupos) > 1 else ''
     return (f'{medalla} **{nombre}**{icono} — '
             f'⚔️ `{fmt_poder(s["kill_points"])}`{_contra_meta(s["kill_points"], g["kp"])} · '
             f'🏅 `{fmt_poder(s["aclamacion"])}`{_contra_meta(s["aclamacion"], g["aclamacion"])} · '
@@ -226,7 +226,7 @@ def linea_tablero(pos: int, s, grupos: list[dict]) -> str:
 
 async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
     """Mensajes del tablero (cada uno con sus embeds): todos los gobernadores del reino por KP del KvK."""
-    from cogs.guerra import grupos_metas, lineas_cumplen
+    from cogs.guerra import grupos_metas, leyenda_grupos
     gid       = str(guild.id)
     temporada = await db.kvk_get_active(gid)
     stats     = await db.kvk_get_import_ranking(temporada['id']) if temporada else []
@@ -239,10 +239,11 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
         )]]
 
     grupos   = grupos_metas(temporada)
-    cabecera = lineas_cumplen(temporada, stats) or [
+    # Leyenda: cada grupo con su rango de poder, sus metas, cuántos cumplen y sus objetivos
+    cabecera = leyenda_grupos(temporada, stats) or [
         '_Sin metas todavía: el liderazgo las pone con 🎯 Metas en el panel de guerra._']
     if len(grupos) > 1:
-        cabecera.append('_El número junto al nombre es su grupo según el poder al empezar el KvK._')
+        cabecera.append('_El animal junto a cada nombre es su grupo. / The animal next to each name is their group._')
     ts = await db.get_config(gid, 'kvk_datos_ts')
     if ts:
         cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · HeroScroll · Reino {REINO}')
@@ -687,7 +688,7 @@ class Kvk(commands.Cog):
 
         await interaction.response.defer()
         from cogs.guerra import (embeds_lista, enviar_embeds, cumple_kp, cumple_aclamacion, lineas_cumplen,
-                                 grupos_metas, indice_grupo, ICONOS_GRUPO)
+                                 grupos_metas, indice_grupo, icono_grupo)
         from cogs.mge import fmt_poder
 
         # Las metas solo se pueden comprobar con los datos importados (los manuales no traen KP ni aclamación)
@@ -705,7 +706,7 @@ class Kvk(commands.Cog):
             # Las filas de la BD no tienen .get(): los importados traen governor_name y los manuales username
             name  = s['governor_name'] if 'governor_name' in s.keys() else s['username']
             pos   = medallas[i] if i < 3 else f'**{i+1}.**'
-            icono = f' {ICONOS_GRUPO[indice_grupo(grupos, s)]}' if len(grupos) > 1 else ''
+            icono = f' {icono_grupo(grupos, indice_grupo(grupos, s))}' if len(grupos) > 1 else ''
             linea = (
                 f'{pos} **{name}**{icono} — '
                 f'T4: `{t4:,}` · T5: `{t5:,}` · '
@@ -784,6 +785,8 @@ class Kvk(commands.Cog):
                     pct = min(100, round(hecho * 100 / meta))
                     progreso.append(f'{icono} {nombre_meta}: **{fmt_poder(hecho)}** / {fmt_poder(meta)} '
                                     f'({pct} %){" ✅" if hecho >= meta else ""}')
+            if grupos[i]['objetivos']:
+                progreso.append(f'📋 Objetivos de tu grupo / _Your group goals_: {grupos[i]["objetivos"]}')
         if progreso:
             embed.add_field(name='🎯 Metas del KvK', value='\n'.join(progreso), inline=False)
         embed.set_footer(text=f'Temporada: {temporada["nombre"]}')

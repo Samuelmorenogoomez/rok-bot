@@ -76,11 +76,15 @@ async def enviar_embeds(enviar, embeds: list[discord.Embed], **kwargs):
 
 MAX_GRUPOS     = 8    # para que todo quepa en un embed (6000 caracteres)
 MAX_OBJETIVOS  = 300  # caracteres de objetivos por grupo
-ICONOS_GRUPO   = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣']
+MAX_NOMBRE     = 25
+
+# Cada grupo es un animal marino, del de más poder al de menos (con 3 grupos: Kraken, Ballenas y Tiburones)
+ANIMALES = [('🐙', 'Kraken'), ('🐋', 'Ballenas'), ('🦈', 'Tiburones'), ('🐬', 'Delfines'),
+            ('🦑', 'Calamares'), ('🐡', 'Peces globo'), ('🦀', 'Cangrejos'), ('🦐', 'Gambas')]
 
 
 def grupos_metas(temporada) -> list[dict]:
-    """[{desde, kp, aclamacion, objetivos}] ordenados por poder; [] si no hay metas.
+    """[{desde, kp, aclamacion, objetivos, nombre?}] ordenados de menos a más poder; [] si no hay metas.
 
     Si aún no hay grupos guardados se usa la meta única de antes como un grupo para todos.
     """
@@ -106,9 +110,26 @@ def nombre_grupo(grupos: list[dict], i: int) -> str:
     return f'{fmt_poder(desde)} – {fmt_poder(hasta)}'
 
 
+def icono_grupo(grupos: list[dict], i: int) -> str:
+    """El grupo de más poder es el Kraken 🐙, el siguiente las Ballenas 🐋…"""
+    return ANIMALES[len(grupos) - 1 - i][0]
+
+
+def animal_grupo(grupos: list[dict], i: int) -> str:
+    """Nombre que le haya puesto el liderazgo o, si no, el del animal."""
+    return grupos[i].get('nombre') or ANIMALES[len(grupos) - 1 - i][1]
+
+
 def etiqueta_grupo(grupos: list[dict], i: int) -> str:
-    """'2️⃣ 60M – 80M'; vacío si solo hay un grupo (entonces las metas son para todos)."""
-    return '' if len(grupos) <= 1 else f'{ICONOS_GRUPO[i]} {nombre_grupo(grupos, i)}'
+    """'🐋 Ballenas (60M – 90M)'; vacío si solo hay un grupo (entonces las metas son para todos)."""
+    if len(grupos) <= 1:
+        return ''
+    return f'{icono_grupo(grupos, i)} {animal_grupo(grupos, i)} ({nombre_grupo(grupos, i)})'
+
+
+def de_mas_a_menos(grupos: list[dict]) -> range:
+    """Índices para enseñar los grupos del Kraken hacia abajo."""
+    return range(len(grupos) - 1, -1, -1)
 
 
 def indice_grupo(grupos: list[dict], s) -> int | None:
@@ -157,8 +178,8 @@ def texto_objetivos(temporada) -> str:
         return '\n'.join(texto_metas(grupos[0]))
     return '\n\n'.join(
         f'**{etiqueta_grupo(grupos, i)}** de poder al empezar / _power at start_\n'
-        + '\n'.join(texto_metas(g) or ['_Sin metas / No goals_'])
-        for i, g in enumerate(grupos)
+        + '\n'.join(texto_metas(grupos[i]) or ['_Sin metas / No goals_'])
+        for i in de_mas_a_menos(grupos)
     )
 
 
@@ -168,11 +189,30 @@ def texto_resumen(temporada) -> str:
     if len(grupos) <= 1:
         return texto_objetivos(temporada)
     lineas = []
-    for i, g in enumerate(grupos):
+    for i in de_mas_a_menos(grupos):
+        g = grupos[i]
         metas = ' · '.join(x for x in (f'⚔️ {fmt_poder(g["kp"])}' if g['kp'] else '',
                                        f'🏅 {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
         lineas.append(f'{etiqueta_grupo(grupos, i)}: {metas or "sin metas"}')
     return '🎯 Metas por poder al empezar el KvK:\n' + '\n'.join(lineas)
+
+
+def _miembros_por_grupo(grupos: list[dict], stats: list) -> list[list]:
+    miembros = [[] for _ in grupos]
+    for s in stats:
+        miembros[indice_grupo(grupos, s)].append(s)
+    return miembros
+
+
+def _cuantos_cumplen(g: dict, miembros: list) -> list[str]:
+    partes = []
+    if g['kp']:
+        n = sum(1 for s in miembros if s['kill_points'] >= g['kp'])
+        partes.append(f'⚔️ KP **{fmt_poder(g["kp"])}**: ✅ **{n}** de {len(miembros)}')
+    if g['aclamacion']:
+        n = sum(1 for s in miembros if s['aclamacion'] >= g['aclamacion'])
+        partes.append(f'🏅 Aclamación **{fmt_poder(g["aclamacion"])}**: ✅ **{n}** de {len(miembros)}')
+    return partes
 
 
 def lineas_cumplen(temporada, stats: list) -> list[str]:
@@ -180,21 +220,33 @@ def lineas_cumplen(temporada, stats: list) -> list[str]:
     grupos = grupos_metas(temporada)
     if not stats or not grupos:
         return []
-    miembros = [[] for _ in grupos]
-    for s in stats:
-        miembros[indice_grupo(grupos, s)].append(s)
+    miembros = _miembros_por_grupo(grupos, stats)
     lineas = []
-    for i, g in enumerate(grupos):
-        partes = []
-        if g['kp']:
-            n = sum(1 for s in miembros[i] if s['kill_points'] >= g['kp'])
-            partes.append(f'⚔️ KP **{fmt_poder(g["kp"])}**: ✅ **{n}** de {len(miembros[i])}')
-        if g['aclamacion']:
-            n = sum(1 for s in miembros[i] if s['aclamacion'] >= g['aclamacion'])
-            partes.append(f'🏅 Aclamación **{fmt_poder(g["aclamacion"])}**: ✅ **{n}** de {len(miembros[i])}')
+    for i in de_mas_a_menos(grupos):
+        partes = _cuantos_cumplen(grupos[i], miembros[i])
         if partes:
             prefijo = f'{etiqueta_grupo(grupos, i)} · ' if len(grupos) > 1 else ''
             lineas.append(prefijo + ' · '.join(partes))
+    return lineas
+
+
+def leyenda_grupos(temporada, stats: list) -> list[str]:
+    """Cabecera del tablero: cada grupo con su rango de poder, sus metas, cuántos cumplen y sus objetivos."""
+    grupos = grupos_metas(temporada)
+    if not grupos:
+        return []
+    miembros = _miembros_por_grupo(grupos, stats)
+    lineas = []
+    if len(grupos) > 1:
+        lineas.append('**Tu grupo depende del poder que tenías al empezar el KvK.** '
+                      '_Your group depends on your power when the KvK started._')
+    for i in de_mas_a_menos(grupos):
+        g      = grupos[i]
+        nombre = f'{etiqueta_grupo(grupos, i)} · {len(miembros[i])} jugadores' if len(grupos) > 1 else 'Metas para todos'
+        partes = _cuantos_cumplen(g, miembros[i])
+        lineas.append(f'**{nombre}** — ' + (' · '.join(partes) if partes else '_sin metas_'))
+        if g['objetivos']:
+            lineas.append(f'> 📋 {" ".join(g["objetivos"].split())}')  # en una línea para que la cita no se corte
     return lineas
 
 
@@ -335,9 +387,9 @@ async def contenido_panel(guild: discord.Guild):
                 valor += '\n' + '\n'.join(cumplen) + '\n' + nota
             embed.add_field(name='🎯 Objetivos del KvK / KvK goals', value=valor[:1024], inline=False)
         else:
-            for i, g in enumerate(grupos):
-                embed.add_field(name=f'🎯 {etiqueta_grupo(grupos, i)} de poder al empezar el KvK',
-                                value=('\n'.join(texto_metas(g)) or '_Sin metas / No goals_')[:1024], inline=False)
+            for i in de_mas_a_menos(grupos):
+                embed.add_field(name=f'{etiqueta_grupo(grupos, i)} de poder al empezar el KvK',
+                                value=('\n'.join(texto_metas(grupos[i])) or '_Sin metas / No goals_')[:1024], inline=False)
             if cumplen:
                 embed.add_field(name='✅ Quién las cumple / Who meets them',
                                 value=('\n'.join(cumplen) + '\n' + nota)[:1024], inline=False)
@@ -534,11 +586,14 @@ class MetasPanelView(discord.ui.View):
         self.aviso        = aviso
 
         opciones = []
-        for i, g in enumerate(self.grupos):
+        for i in de_mas_a_menos(self.grupos):
+            g     = self.grupos[i]
             metas = ' · '.join(x for x in (f'KP {fmt_poder(g["kp"])}' if g['kp'] else '',
                                            f'Aclamación {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
-            opciones.append(discord.SelectOption(label=f'{nombre_grupo(self.grupos, i)}'[:100], value=str(i),
-                                                 emoji=ICONOS_GRUPO[i], description=(metas or 'Sin metas')[:100]))
+            opciones.append(discord.SelectOption(
+                label=f'{animal_grupo(self.grupos, i)} ({nombre_grupo(self.grupos, i)})'[:100], value=str(i),
+                emoji=icono_grupo(self.grupos, i), description=(metas or 'Sin metas')[:100],
+            ))
         if len(self.grupos) < MAX_GRUPOS:
             opciones.append(discord.SelectOption(label='Añadir grupo de poder', value='nuevo', emoji='➕'))
         selector = discord.ui.Select(placeholder='Elige un grupo para editarlo o añade uno nuevo', options=opciones)
@@ -557,12 +612,15 @@ class MetasPanelView(discord.ui.View):
         texto = '## 🎯 Metas y objetivos del KvK\n'
         if not self.grupos:
             texto += '_Sin metas todavía. Elige **➕ Añadir grupo de poder** en el desplegable._\n'
-        for i, g in enumerate(self.grupos):
+        for i in de_mas_a_menos(self.grupos):
+            g     = self.grupos[i]
             metas = ' · '.join(x for x in (f'⚔️ KP **{fmt_poder(g["kp"])}**' if g['kp'] else '',
                                            f'🏅 **{fmt_poder(g["aclamacion"])}**' if g['aclamacion'] else '') if x)
-            texto += (f'{ICONOS_GRUPO[i]} **{nombre_grupo(self.grupos, i)}** — {metas or "sin metas"}'
+            texto += (f'{icono_grupo(self.grupos, i)} **{animal_grupo(self.grupos, i)}** '
+                      f'({nombre_grupo(self.grupos, i)}) — {metas or "sin metas"}'
                       + (' · 📋' if g['objetivos'] else '') + '\n')
         texto += ('_El grupo de cada jugador sale de su **poder al empezar el KvK** (HeroScroll). '
+                  'El de más poder es el 🐙 Kraken, luego 🐋 Ballenas, 🦈 Tiburones… '
                   'Con un solo grupo, las metas son para todos. Para quitar un grupo, vacía todos sus campos._')
         if self.aviso:
             texto += f'\n> {self.aviso}'
@@ -605,8 +663,8 @@ class GrupoModal(discord.ui.Modal):
 
     def __init__(self, panel: MetasPanelView, indice: int | None):
         g = panel.grupos[indice] if indice is not None else None
-        super().__init__(title=f'{ICONOS_GRUPO[indice]} {nombre_grupo(panel.grupos, indice)}'[:45] if g
-                         else '➕ Nuevo grupo de poder')
+        super().__init__(title=f'{icono_grupo(panel.grupos, indice)} {animal_grupo(panel.grupos, indice)} '
+                               f'({nombre_grupo(panel.grupos, indice)})'[:45] if g else '➕ Nuevo grupo de poder')
         self.panel, self.indice = panel, indice
         self.primero = g is not None and g['desde'] == 0  # el de menos poder empieza siempre en 0
 
@@ -628,6 +686,11 @@ class GrupoModal(discord.ui.Modal):
                                        description='KP de todo el KvK (HeroScroll)', component=self.kp))
         self.add_item(discord.ui.Label(text='Meta de aclamación por jugador', component=self.aclamacion))
         self.add_item(discord.ui.Label(text='Objetivos de este grupo (opcional)', component=self.objetivos))
+        self.nombre = discord.ui.TextInput(
+            placeholder='Vacío = su animal (Kraken, Ballenas, Tiburones…)', max_length=MAX_NOMBRE, required=False,
+            default=(g.get('nombre') or None) if g else None,
+        )
+        self.add_item(discord.ui.Label(text='Nombre del grupo (opcional)', component=self.nombre))
 
     async def on_submit(self, interaction: discord.Interaction):
         valores = {}
@@ -648,7 +711,7 @@ class GrupoModal(discord.ui.Modal):
             if self.indice is None:
                 await interaction.response.edit_message(content=self.panel.contenido(), view=self.panel)
                 return
-            quitado = nombre_grupo(grupos, self.indice)
+            quitado = f'{animal_grupo(grupos, self.indice)} ({nombre_grupo(grupos, self.indice)})'
             del grupos[self.indice]
             aviso = f'🗑️ Grupo **{quitado}** quitado.'
         else:
@@ -662,6 +725,8 @@ class GrupoModal(discord.ui.Modal):
                 return
             nuevo = {'desde': desde, 'kp': valores['KP'] or 0, 'aclamacion': valores['aclamación'] or 0,
                      'objetivos': objetivos}
+            if self.nombre.value.strip():
+                nuevo['nombre'] = self.nombre.value.strip()
             if self.indice is None:
                 grupos.append(nuevo)
             else:
@@ -686,8 +751,9 @@ class GrupoModal(discord.ui.Modal):
         refrescar_calendario(guild)
         refrescar_tablero_luego(guild)  # el "faltan" de cada jugador depende de las metas de su grupo
         anotar(guild, interaction.user, '🎯 Metas KvK', f'{aviso.split(".")[0]} · ' + ' | '.join(
-            f'{nombre_grupo(grupos, i)}: KP {fmt_poder(g["kp"]) if g["kp"] else "—"}, '
-            f'aclamación {fmt_poder(g["aclamacion"]) if g["aclamacion"] else "—"}' for i, g in enumerate(grupos)))
+            f'{animal_grupo(grupos, i)} ({nombre_grupo(grupos, i)}): KP {fmt_poder(grupos[i]["kp"]) if grupos[i]["kp"] else "—"}, '
+            f'aclamación {fmt_poder(grupos[i]["aclamacion"]) if grupos[i]["aclamacion"] else "—"}'
+            for i in de_mas_a_menos(grupos)))
 
 
 # ── Cambios de estado ──────────────────────────────────────────────────────────
