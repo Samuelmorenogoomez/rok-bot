@@ -61,6 +61,13 @@ def cuando_evento(ev) -> str:
     return '🔁 ' + nombre_dias(ev['dias'])
 
 
+def toca_ese_dia(ev, dia: datetime) -> bool:
+    """¿El evento cae en el día de `dia`?"""
+    if ev['puntual']:
+        return ev['fecha_unica'] == dia.strftime('%Y-%m-%d')
+    return str(dia.weekday()) in ev['dias'].split(',')
+
+
 def parse_hora(texto: str) -> str | None:
     """Acepta '20:00', '20.30', '20h', '9:05', '20' → 'HH:MM'."""
     m = re.fullmatch(r'(\d{1,2})(?:\s*[:.h]\s*(\d{2})?)?\s*h?', texto.strip().lower())
@@ -501,52 +508,47 @@ class Eventos(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def check_eventos(self):
-        now          = datetime.now(ZONA)
-        today        = now.strftime('%Y-%m-%d')
-        current_time = now.strftime('%H:%M')
-        current_day  = str(now.weekday())
+        now   = datetime.now(ZONA)
+        # El aviso se busca con la hora de dentro de 30 min: así un evento a las 00:10 avisa a las 23:40 del día antes
+        en_30 = now + timedelta(minutes=30)
+        for ev in await db.get_all_active_events():
+            try:
+                await self._revisar_evento(ev, now, en_30)
+            except Exception as e:
+                # Si una excepción se escapa del bucle, discord.py lo para para siempre y no sale ningún aviso más
+                print(f'[eventos] Error con el evento #{ev["id"]} {ev["nombre"]}: {type(e).__name__}: {e}')
 
-        eventos = await db.get_all_active_events()
-        for ev in eventos:
-            if ev['puntual']:
-                if ev['fecha_unica'] != today:
-                    continue
-            else:
-                if current_day not in ev['dias'].split(','):
-                    continue
+    async def _revisar_evento(self, ev, now: datetime, en_30: datetime):
+        canal = self.bot.get_channel(int(ev['canal_id']))
+        if not canal:
+            return
+        rol_mention = f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
 
-            canal = self.bot.get_channel(int(ev['canal_id']))
-            if not canal:
-                continue
-
-            rol_mention = f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
-            event_dt    = datetime.strptime(ev['hora'], '%H:%M').replace(
-                year=now.year, month=now.month, day=now.day, tzinfo=ZONA
+        dia_aviso = en_30.strftime('%Y-%m-%d')  # día del evento al que corresponde el aviso
+        if (toca_ese_dia(ev, en_30) and en_30.strftime('%H:%M') == ev['hora']
+                and ev['dia_ultimo_aviso'] != dia_aviso):
+            await db.update_event_aviso(ev['id'], dia_aviso)
+            embed = discord.Embed(
+                title=f'⏰ {ev["nombre"]} — en 30 minutos / in 30 minutes',
+                description=ev['descripcion'] or '',
+                color=COLOR_BOT,
             )
-            aviso_time = (event_dt - timedelta(minutes=30)).strftime('%H:%M')
+            embed.add_field(name='Hora / Time', value=fmt_horas(ev['hora'], en_30.date()))
+            await canal.send(content=rol_mention, embed=embed)
 
-            if current_time == aviso_time and ev['dia_ultimo_aviso'] != today:
-                await db.update_event_aviso(ev['id'], today)
-                embed = discord.Embed(
-                    title=f'⏰ {ev["nombre"]} — en 30 minutos / in 30 minutes',
-                    description=ev['descripcion'] or '',
-                    color=COLOR_BOT,
-                )
-                embed.add_field(name='Hora / Time', value=fmt_horas(ev['hora'], now.date()))
-                await canal.send(content=rol_mention, embed=embed)
+        today = now.strftime('%Y-%m-%d')
+        if toca_ese_dia(ev, now) and now.strftime('%H:%M') == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
+            await db.update_event_ejecucion(ev['id'], today)
+            embed = discord.Embed(
+                title=f'🚨 {ev["nombre"]} — ¡AHORA! / NOW!',
+                description=ev['descripcion'] or '',
+                color=0xFF0000,
+            )
+            await canal.send(content=rol_mention, embed=embed)
 
-            elif current_time == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
-                await db.update_event_ejecucion(ev['id'], today)
-                embed = discord.Embed(
-                    title=f'🚨 {ev["nombre"]} — ¡AHORA! / NOW!',
-                    description=ev['descripcion'] or '',
-                    color=0xFF0000,
-                )
-                await canal.send(content=rol_mention, embed=embed)
-
-                if ev['puntual']:
-                    await db.delete_event_by_id(ev['id'])
-                    await refrescar_calendario(canal.guild)
+            if ev['puntual']:
+                await db.delete_event_by_id(ev['id'])
+                await refrescar_calendario(canal.guild)
 
     @check_eventos.before_loop
     async def before_check(self):
