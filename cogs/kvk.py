@@ -263,7 +263,8 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
     for n, bloque in enumerate(bloques, 1):
         t = titulo if len(bloques) == 1 else f'{titulo} ({n}/{len(bloques)})'
         embeds.append(discord.Embed(title=t[:256], description=bloque, color=0xFF4444))
-    embeds[-1].set_footer(text=f'Ordenado por 🏅 aclamación (lo que más cuenta) · ⚔️ KP del KvK · '
+    embeds[-1].set_footer(text=f'Ordenado por 🏅 aclamación (lo que más cuenta); si empatan, por KP y luego por poder · '
+                               f'⚔️ KP del KvK · '
                                f'💪 poder ganado/perdido · ✅ meta cumplida · Se actualiza solo · {ALIANZA_TAG}')
 
     # Cada mensaje admite 10 embeds y ~6000 caracteres en total

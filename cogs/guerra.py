@@ -160,8 +160,11 @@ def cumple_aclamacion(temporada, s, grupos: list[dict] = None) -> bool:
 
 
 def orden_aclamacion(s) -> tuple:
-    """Lo que más cuenta en el KvK es la aclamación; a igualdad, los KP."""
-    return s['aclamacion'], s['kill_points']
+    """Lo que más cuenta en el KvK es la aclamación; a igualdad, los KP, y si tampoco hay, el poder actual.
+
+    Así, al empezar el KvK (todo a 0) el tablero sale ordenado por poder en vez de al azar.
+    """
+    return s['aclamacion'], s['kill_points'], s['poder_inicio'] + s['poder_delta']
 
 
 def texto_metas(g: dict) -> list[str]:
