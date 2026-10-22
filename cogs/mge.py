@@ -631,6 +631,9 @@ class PanelAdmin(discord.ui.LayoutView):
     async def _elegir(self, interaction: discord.Interaction, pos: int):
         valor    = interaction.data['values'][0]
         guild_id = str(interaction.guild_id)
+        # El panel puede llevar un rato abierto: se trabaja con los datos de ahora, no con los de cuando se pintó
+        self.inscritos = await db.mge_get_inscritos(self.evento_id)
+        self.selec     = await db.mge_get_seleccionados(self.evento_id)
         ocupante = next((s for s in self.selec if s['posicion'] == pos), None)
         meta_pos = ocupante['poder'] if ocupante else self.ev['poder_min']  # la meta va con la plaza
         aviso    = ''
@@ -640,7 +643,10 @@ class PanelAdmin(discord.ui.LayoutView):
                 await db.mge_quitar_seleccion(self.evento_id, ocupante['user_id'])
                 aviso = f'⬜ Plaza #{pos} vacía · **{ocupante["gobernador"]}** vuelve a la espera'
         elif not ocupante or valor != ocupante['user_id']:
-            ins    = next(i for i in self.inscritos if i['user_id'] == valor)
+            ins = next((i for i in self.inscritos if i['user_id'] == valor), None)
+            if not ins:
+                await self.render(interaction, '⚠️ Ese jugador se ha borrado del MGE mientras tenías el panel abierto.')
+                return
             previa = self._plaza_de(valor)
             await db.mge_seleccionar(self.evento_id, guild_id, valor, ins['gobernador'], meta_pos, pos)
             aviso = f'{medalla(pos)} **{ins["gobernador"]}** → plaza #{pos}'
@@ -863,17 +869,21 @@ class Mge(commands.Cog):
     @tasks.loop(minutes=1)
     async def autocierre(self):
         for ev in await db.mge_get_pendientes_autocierre(int(time.time())):
-            await db.mge_set_inscripcion_abierta(int(ev['id']), False)
-            await refrescar_tablon(self.bot, int(ev['id']))
-            canal = self.bot.get_channel(int(ev['canal_id'])) if ev['canal_id'] else None
-            if canal:
-                try:
-                    await canal.send(
-                        f'🔒 Inscripciones de **{ev["nombre"]}** cerradas. El liderazgo asignará las plazas.\n'
-                        f'_Enrollment for **{ev["nombre"]}** is closed. Leadership will assign the slots._'
-                    )
-                except discord.HTTPException:
-                    pass
+            try:
+                await db.mge_set_inscripcion_abierta(int(ev['id']), False)
+                await refrescar_tablon(self.bot, int(ev['id']))
+                canal = self.bot.get_channel(int(ev['canal_id'])) if ev['canal_id'] else None
+                if canal:
+                    try:
+                        await canal.send(
+                            f'🔒 Inscripciones de **{ev["nombre"]}** cerradas. El liderazgo asignará las plazas.\n'
+                            f'_Enrollment for **{ev["nombre"]}** is closed. Leadership will assign the slots._'
+                        )
+                    except discord.HTTPException:
+                        pass
+            except Exception as e:
+                # Que un MGE con problemas no pare el bucle de cierres (discord.py lo detendría para siempre)
+                print(f'[mge] Error en el cierre automático del MGE #{ev["id"]}: {type(e).__name__}: {e}')
 
     @autocierre.before_loop
     async def antes_autocierre(self):
