@@ -471,14 +471,15 @@ class MetasModal(discord.ui.Modal):
         await db.kvk_set_metas(self.temporada_id, metas['KP'], metas['aclamación'], objetivos)
         temporada = await db.kvk_get_active(str(guild.id))
         await refrescar_panel(guild)
-        from cogs.kvk import refrescar_calendario
+        from cogs.kvk import refrescar_calendario, refrescar_tablero_luego
         refrescar_calendario(guild)
+        refrescar_tablero_luego(guild)  # el "faltan" de cada jugador depende de las metas
         anotar(guild, interaction.user, '🎯 Metas KvK',
                f'KP {fmt_poder(metas["KP"]) if metas["KP"] else "—"} · '
                f'aclamación {fmt_poder(metas["aclamación"]) if metas["aclamación"] else "—"}'
                + (f' · objetivos: {objetivos}' if objetivos else ''))
 
-        respuesta = '✅ Metas guardadas. El panel y el calendario ya las muestran.'
+        respuesta = '✅ Metas guardadas. El panel, el tablero y el calendario ya las muestran.'
         if self.anunciar.values and self.anunciar.values[0] == 'si' and temporada:
             canal = buscar_canal(guild, 'kvk-anuncios') or buscar_canal(guild, 'kvk-chat')
             embed = discord.Embed(

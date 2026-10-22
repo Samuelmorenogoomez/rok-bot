@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import re
+import time
 import aiohttp
 import openpyxl
 import discord
@@ -19,6 +20,16 @@ def refrescar_calendario(guild):
     refrescar_calendario_luego(guild)
 
 
+_tareas: set = set()
+
+
+def refrescar_tablero_luego(guild):
+    """Repinta el tablero sin hacer esperar a quien pulsó (son varios mensajes que editar)."""
+    tarea = asyncio.create_task(refrescar_tablero(guild))
+    _tareas.add(tarea)
+    tarea.add_done_callback(_tareas.discard)
+
+
 class ConfirmResetView(discord.ui.View):
     def __init__(self, temporada_id: int, temporada_nombre: str):
         super().__init__(timeout=30)
@@ -31,6 +42,7 @@ class ConfirmResetView(discord.ui.View):
         await db.kvk_clear_stats(self.temporada_id)
         await db.kvk_clear_guerras(self.temporada_id)
         self.stop()
+        refrescar_tablero_luego(interaction.guild)
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title='✅ KvK reseteado',
@@ -83,7 +95,8 @@ def parse_excel(data: bytes) -> list[dict]:
             'kill_points':   max(0, kill_pts  or 0),
             'muertes':       max(0, muertes   or 0),
             'dkp':           max(0, dkp       or 0),
-            'aclamacion':    0,  # el Excel no la trae; solo llega leyendo HeroScroll por enlace
+            'aclamacion':    0,  # el Excel no trae ni la aclamación ni el poder ganado: solo HeroScroll por enlace
+            'poder_delta':   0,
         })
 
     return jugadores
@@ -135,6 +148,7 @@ def leer_heroscroll(html: str) -> list[dict]:
             'muertes':       max(0, d.get('deads') or 0),
             'dkp':           max(0, g.get('dkp') or 0),
             'aclamacion':    max(0, d.get('acclaim') or 0),
+            'poder_delta':   d.get('power') or 0,  # puede ser negativo: poder perdido en el KvK
         })
     if not jugadores:
         raise ValueError(f'el reino {REINO} no aparece en ese KvK')
@@ -161,14 +175,151 @@ async def enlace_heroscroll(guild_id: str, temporada_id: int) -> str | None:
     return enlace if tid == str(temporada_id) else None
 
 
-async def guardar_importados(temporada_id: int, jugadores: list[dict]):
+async def guardar_importados(guild_id: str, temporada_id: int, jugadores: list[dict]):
     rows = [
         (temporada_id, j['governor_id'], j['governor_name'], j['kills_t4'], j['kills_t5'],
-         j['kill_points'], j['muertes'], j['dkp'], j['aclamacion'])
+         j['kill_points'], j['muertes'], j['dkp'], j['aclamacion'], j['poder_delta'])
         for j in jugadores
     ]
     await db.kvk_clear_import(temporada_id)
     await db.kvk_insert_import(temporada_id, rows)
+    await db.set_config(guild_id, 'kvk_datos_ts', str(int(time.time())))
+
+
+# ── Tablero fijo de #kvk-stats ─────────────────────────────────────────────────
+
+MAX_DESCRIPCION = 3900  # Discord admite 4096 por embed; se deja margen
+_lock_tablero   = asyncio.Lock()
+
+
+def fmt_signo(n: int) -> str:
+    from cogs.mge import fmt_poder
+    return ('+' if n > 0 else '−' if n < 0 else '±') + fmt_poder(abs(n))
+
+
+def _contra_meta(hecho: int, meta: int) -> str:
+    from cogs.mge import fmt_poder
+    if not meta:
+        return ''
+    if hecho >= meta:
+        return f' / {fmt_poder(meta)} ✅'
+    return f' / {fmt_poder(meta)} (faltan {fmt_poder(meta - hecho)})'
+
+
+def linea_tablero(pos: int, s, temporada) -> str:
+    from cogs.mge import fmt_poder
+    medalla = ['🥇', '🥈', '🥉'][pos - 1] if pos <= 3 else f'`{pos:>3}.`'
+    nombre  = discord.utils.escape_markdown(s['governor_name'])
+    return (f'{medalla} **{nombre}** — '
+            f'⚔️ `{fmt_poder(s["kill_points"])}`{_contra_meta(s["kill_points"], temporada["meta_kp"])} · '
+            f'🏅 `{fmt_poder(s["aclamacion"])}`{_contra_meta(s["aclamacion"], temporada["meta_aclamacion"])} · '
+            f'💪 `{fmt_signo(s["poder_delta"])}`')
+
+
+async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
+    """Mensajes del tablero (cada uno con sus embeds): todos los gobernadores del reino por KP del KvK."""
+    from cogs.mge import fmt_poder
+    from cogs.guerra import cumple_kp, cumple_aclamacion
+    gid       = str(guild.id)
+    temporada = await db.kvk_get_active(gid)
+    stats     = await db.kvk_get_import_ranking(temporada['id']) if temporada else []
+    titulo    = f'📊 Tablero del KvK / KvK board — {temporada["nombre"]}' if temporada else '📊 Tablero del KvK / KvK board'
+    if not stats:
+        return [[discord.Embed(
+            title=titulo, color=0xFF4444,
+            description=(f'_Todavía no hay datos de este KvK. El liderazgo los carga con `/kvk-actualizar` '
+                         f'y luego se actualizan solos.\nNo data yet for this KvK._'),
+        )]]
+
+    cabecera = []
+    if temporada['meta_kp']:
+        n = sum(1 for s in stats if cumple_kp(temporada, s))
+        cabecera.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(temporada["meta_kp"])}** · ✅ **{n}** de {len(stats)}')
+    if temporada['meta_aclamacion']:
+        n = sum(1 for s in stats if cumple_aclamacion(temporada, s))
+        cabecera.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(temporada["meta_aclamacion"])}** · '
+                        f'✅ **{n}** de {len(stats)}')
+    if not cabecera:
+        cabecera.append('_Sin metas todavía: el liderazgo las pone con 🎯 Metas en el panel de guerra._')
+    ts = await db.get_config(gid, 'kvk_datos_ts')
+    if ts:
+        cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · HeroScroll · Reino {REINO}')
+
+    ordenados = sorted(stats, key=lambda s: s['kill_points'], reverse=True)
+    bloques, actual = [], '\n'.join(cabecera) + '\n\n'
+    for pos, s in enumerate(ordenados, 1):
+        linea = linea_tablero(pos, s, temporada)
+        if len(actual) + len(linea) + 1 > MAX_DESCRIPCION:
+            bloques.append(actual)
+            actual = ''
+        actual += linea + '\n'
+    bloques.append(actual)
+
+    embeds = []
+    for n, bloque in enumerate(bloques, 1):
+        t = titulo if len(bloques) == 1 else f'{titulo} ({n}/{len(bloques)})'
+        embeds.append(discord.Embed(title=t[:256], description=bloque, color=0xFF4444))
+    embeds[-1].set_footer(text=f'⚔️ KP del KvK · 🏅 aclamación · 💪 poder ganado/perdido en el KvK · ✅ meta cumplida · '
+                               f'Se actualiza solo · {ALIANZA_TAG}')
+
+    # Cada mensaje admite 10 embeds y ~6000 caracteres en total
+    mensajes, grupo, total = [], [], 0
+    for e in embeds:
+        if grupo and (len(grupo) == 10 or total + len(e) > 5800):
+            mensajes.append(grupo)
+            grupo, total = [], 0
+        grupo.append(e)
+        total += len(e)
+    mensajes.append(grupo)
+    return mensajes
+
+
+async def refrescar_tablero(guild: discord.Guild):
+    """Repinta el tablero fijo de #kvk-stats editando sus mensajes.
+
+    Si cambia el número de mensajes o alguno se ha borrado, se vuelve a publicar entero para que siga en orden.
+    """
+    async with _lock_tablero:
+        try:
+            await _refrescar_tablero(guild)
+        except discord.HTTPException as e:
+            print(f'[kvk] No se pudo actualizar el tablero en {guild.name}: {e}')
+
+
+async def _refrescar_tablero(guild: discord.Guild):
+    from cogs.guerra import buscar_canal
+    gid      = str(guild.id)
+    mensajes = await contenido_tablero(guild)
+    dato     = await db.get_config(gid, 'kvk_tablero')
+    canal, ids = None, []
+    if dato and ':' in dato:
+        canal_id, lista = dato.split(':', 1)
+        canal = guild.get_channel(int(canal_id))
+        ids   = [int(x) for x in lista.split(',') if x]
+
+    if canal and len(ids) == len(mensajes):
+        try:
+            for mensaje_id, embeds in zip(ids, mensajes):
+                await canal.get_partial_message(mensaje_id).edit(embeds=embeds)
+            return
+        except discord.NotFound:
+            pass  # alguien borró un trozo: se republica entero
+
+    if canal:
+        for mensaje_id in ids:
+            try:
+                await canal.get_partial_message(mensaje_id).delete()
+            except discord.HTTPException:
+                pass
+    canal = canal or buscar_canal(guild, 'kvk-stats')
+    if not canal:
+        return
+    nuevos = [await canal.send(embeds=embeds) for embeds in mensajes]
+    await db.set_config(gid, 'kvk_tablero', f'{canal.id}:' + ','.join(str(m.id) for m in nuevos))
+    try:
+        await nuevos[0].pin()
+    except discord.HTTPException:
+        pass
 
 
 def embed_importados(temporada, jugadores: list[dict], origen: str) -> discord.Embed:
@@ -440,8 +591,9 @@ class Kvk(commands.Cog):
             await interaction.followup.send('❌ No se encontraron jugadores en el archivo.', ephemeral=True)
             return
 
-        await guardar_importados(temporada['id'], jugadores)
+        await guardar_importados(str(interaction.guild_id), temporada['id'], jugadores)
         await interaction.followup.send(embed=embed_importados(temporada, jugadores, f'`{archivo.filename}`'))
+        await refrescar_tablero(interaction.guild)
 
     @app_commands.command(name='kvk-actualizar',
                           description=f'[ADMIN] Carga las stats del reino {REINO} desde el enlace de HeroScroll (luego se actualiza solo)')
@@ -477,10 +629,12 @@ class Kvk(commands.Cog):
             return
 
         await db.set_config(gid, 'heroscroll_url', f'{temporada["id"]}|{enlace}')
-        await guardar_importados(temporada['id'], jugadores)
+        await guardar_importados(gid, temporada['id'], jugadores)
         embed = embed_importados(temporada, jugadores, f'[HeroScroll]({enlace}) · solo el reino {REINO}')
-        embed.set_footer(text=f'Se actualiza solo cada {HORAS_AUTO} h mientras dure el KvK · /kvk-ranking para el ranking completo')
+        embed.set_footer(text=f'Se actualiza solo cada {HORAS_AUTO} h mientras dure el KvK · '
+                              'el tablero fijo de #kvk-stats también se actualiza')
         await interaction.followup.send(embed=embed)
+        await refrescar_tablero(interaction.guild)
 
     # ── Actualización automática desde HeroScroll ──────────────────────────────
 
@@ -494,8 +648,9 @@ class Kvk(commands.Cog):
                 if not enlace:
                     continue
                 jugadores = await descargar_heroscroll(enlace)
-                await guardar_importados(temporada['id'], jugadores)
+                await guardar_importados(gid, temporada['id'], jugadores)
                 print(f'[kvk] HeroScroll: {len(jugadores)} gobernadores del {REINO} actualizados en {guild.name}')
+                await refrescar_tablero(guild)
             except Exception as e:
                 # Si HeroScroll falla se conservan los datos anteriores y se reintenta en la siguiente vuelta
                 print(f'[kvk] No se pudo actualizar desde HeroScroll en {guild.name}: {type(e).__name__}: {e}')
