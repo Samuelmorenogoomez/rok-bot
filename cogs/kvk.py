@@ -383,13 +383,17 @@ class Kvk(commands.Cog):
             )
             return
 
+        await interaction.response.defer()
+        from cogs.guerra import embeds_lista, enviar_embeds
+
         medallas = ['🥇', '🥈', '🥉']
         lineas = []
         for i, s in enumerate(stats):
             t4    = s['kills_t4']
             t5    = s['kills_t5']
             total = t4 + t5
-            name  = s.get('governor_name') or s.get('username', '?')
+            # Las filas de la BD no tienen .get(): los importados traen governor_name y los manuales username
+            name  = s['governor_name'] if 'governor_name' in s.keys() else s['username']
             pos   = medallas[i] if i < 3 else f'**{i+1}.**'
             lineas.append(
                 f'{pos} **{name}** — '
@@ -397,15 +401,10 @@ class Kvk(commands.Cog):
                 f'Total: `{total:,}` · 💀 `{s["muertes"]:,}`'
             )
 
-        # Dividir en páginas de 20 si hay muchos jugadores
-        paginas = [lineas[i:i+20] for i in range(0, len(lineas), 20)]
-        embed = discord.Embed(
-            title=f'🏆 Ranking KvK — {temporada["nombre"]}',
-            description='\n'.join(paginas[0]),
-            color=0xFF4444,
-        )
-        embed.set_footer(text=f'Fuente: {fuente} · {len(stats)} jugadores')
-        await interaction.response.send_message(embed=embed)
+        # Todos los jugadores, repartidos en tantos embeds como haga falta
+        embeds = embeds_lista(f'🏆 Ranking KvK — {temporada["nombre"]}', lineas, 0xFF4444, por_embed=25)
+        embeds[-1].set_footer(text=f'Fuente: {fuente} · {len(stats)} jugadores')
+        await enviar_embeds(interaction.followup.send, embeds)
 
     @app_commands.command(name='kvk-buscar', description='Busca las stats de un gobernador por nombre')
     @solo_en_canal('kvk')
