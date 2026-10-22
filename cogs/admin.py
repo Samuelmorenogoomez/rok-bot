@@ -42,15 +42,20 @@ async def build_panel_embed(guild: discord.Guild) -> discord.Embed:
     # ── KvK activo ────────────────────────────────────────────────────────────
     temporada = await db.kvk_get_active(str(guild.id))
     if temporada:
-        from cogs.guerra import fmt
+        from cogs.guerra import fmt, orden_aclamacion
         medallas = ['🥇', '🥈', '🥉']
-        # Primero los KP de las guerras (CSV de ROKSTATS); si aún no hay, el Excel importado de heroscroll
-        guerra = await db.guerra_ranking_temporada(temporada['id'])
-        if guerra:
+        # Primero la aclamación (lo que más cuenta); si aún no hay, los KP de las guerras (CSV de ROKSTATS)
+        # y si tampoco, las kills del Excel importado de heroscroll
+        importados = sorted(await db.kvk_get_import_ranking(temporada['id']), key=orden_aclamacion, reverse=True)
+        guerra     = await db.guerra_ranking_temporada(temporada['id'])
+        if importados and importados[0]['aclamacion'] > 0:
+            lineas = [f'{medallas[i]} **{s["governor_name"]}** — 🏅 `{fmt(s["aclamacion"])}` de aclamación'
+                      for i, s in enumerate(importados[:3])]
+        elif guerra:
             lineas = [f'{medallas[i]} **{g["nombre"]}** — `+{fmt(g["ganados"])}` KP en guerra'
                       for i, g in enumerate(guerra[:3])]
         else:
-            importados = await db.kvk_get_import_ranking(temporada['id'])
+            importados.sort(key=lambda s: s['kills_t4'] + s['kills_t5'], reverse=True)
             lineas = [f'{medallas[i]} **{s["governor_name"]}** — {s["kills_t4"] + s["kills_t5"]:,} kills'
                       for i, s in enumerate(importados[:3])]
         if not lineas:

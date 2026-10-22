@@ -159,13 +159,18 @@ def cumple_aclamacion(temporada, s, grupos: list[dict] = None) -> bool:
     return bool(g and g['aclamacion']) and s['aclamacion'] >= g['aclamacion']
 
 
+def orden_aclamacion(s) -> tuple:
+    """Lo que más cuenta en el KvK es la aclamación; a igualdad, los KP."""
+    return s['aclamacion'], s['kill_points']
+
+
 def texto_metas(g: dict) -> list[str]:
     lineas = []
+    if g['aclamacion']:
+        lineas.append(f'⭐ 🏅 Meta de aclamación (la principal) / _Acclaim target (main)_: '
+                      f'**{fmt_poder(g["aclamacion"])}** por jugador / _per player_')
     if g['kp']:
         lineas.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(g["kp"])}** por jugador / _per player_')
-    if g['aclamacion']:
-        lineas.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(g["aclamacion"])}** '
-                      'por jugador / _per player_')
     if g['objetivos']:
         lineas.append(f'📋 {g["objetivos"]}')
     return lineas
@@ -191,8 +196,8 @@ def texto_resumen(temporada) -> str:
     lineas = []
     for i in de_mas_a_menos(grupos):
         g = grupos[i]
-        metas = ' · '.join(x for x in (f'⚔️ {fmt_poder(g["kp"])}' if g['kp'] else '',
-                                       f'🏅 {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
+        metas = ' · '.join(x for x in (f'⭐ 🏅 {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '',
+                                       f'⚔️ {fmt_poder(g["kp"])}' if g['kp'] else '') if x)
         lineas.append(f'{etiqueta_grupo(grupos, i)}: {metas or "sin metas"}')
     return '🎯 Metas por poder al empezar el KvK:\n' + '\n'.join(lineas)
 
@@ -206,12 +211,12 @@ def _miembros_por_grupo(grupos: list[dict], stats: list) -> list[list]:
 
 def _cuantos_cumplen(g: dict, miembros: list) -> list[str]:
     partes = []
+    if g['aclamacion']:
+        n = sum(1 for s in miembros if s['aclamacion'] >= g['aclamacion'])
+        partes.append(f'⭐ 🏅 Aclamación **{fmt_poder(g["aclamacion"])}**: ✅ **{n}** de {len(miembros)}')
     if g['kp']:
         n = sum(1 for s in miembros if s['kill_points'] >= g['kp'])
         partes.append(f'⚔️ KP **{fmt_poder(g["kp"])}**: ✅ **{n}** de {len(miembros)}')
-    if g['aclamacion']:
-        n = sum(1 for s in miembros if s['aclamacion'] >= g['aclamacion'])
-        partes.append(f'🏅 Aclamación **{fmt_poder(g["aclamacion"])}**: ✅ **{n}** de {len(miembros)}')
     return partes
 
 
@@ -236,7 +241,8 @@ def leyenda_grupos(temporada, stats: list) -> list[str]:
     if not grupos:
         return []
     miembros = _miembros_por_grupo(grupos, stats)
-    lineas = []
+    lineas = ['⭐ **Lo que más cuenta es la aclamación 🏅**: el tablero va ordenado por ella. '
+              '_Acclaim is what matters most: the board is sorted by it._']
     if len(grupos) > 1:
         lineas.append('**Tu grupo depende del poder que tenías al empezar el KvK.** '
                       '_Your group depends on your power when the KvK started._')
@@ -588,8 +594,8 @@ class MetasPanelView(discord.ui.View):
         opciones = []
         for i in de_mas_a_menos(self.grupos):
             g     = self.grupos[i]
-            metas = ' · '.join(x for x in (f'KP {fmt_poder(g["kp"])}' if g['kp'] else '',
-                                           f'Aclamación {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
+            metas = ' · '.join(x for x in (f'⭐ Aclamación {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '',
+                                           f'KP {fmt_poder(g["kp"])}' if g['kp'] else '') if x)
             opciones.append(discord.SelectOption(
                 label=f'{animal_grupo(self.grupos, i)} ({nombre_grupo(self.grupos, i)})'[:100], value=str(i),
                 emoji=icono_grupo(self.grupos, i), description=(metas or 'Sin metas')[:100],
@@ -614,8 +620,8 @@ class MetasPanelView(discord.ui.View):
             texto += '_Sin metas todavía. Elige **➕ Añadir grupo de poder** en el desplegable._\n'
         for i in de_mas_a_menos(self.grupos):
             g     = self.grupos[i]
-            metas = ' · '.join(x for x in (f'⚔️ KP **{fmt_poder(g["kp"])}**' if g['kp'] else '',
-                                           f'🏅 **{fmt_poder(g["aclamacion"])}**' if g['aclamacion'] else '') if x)
+            metas = ' · '.join(x for x in (f'⭐ 🏅 **{fmt_poder(g["aclamacion"])}**' if g['aclamacion'] else '',
+                                           f'⚔️ KP **{fmt_poder(g["kp"])}**' if g['kp'] else '') if x)
             texto += (f'{icono_grupo(self.grupos, i)} **{animal_grupo(self.grupos, i)}** '
                       f'({nombre_grupo(self.grupos, i)}) — {metas or "sin metas"}'
                       + (' · 📋' if g['objetivos'] else '') + '\n')
@@ -682,9 +688,11 @@ class GrupoModal(discord.ui.Modal):
             placeholder='Ej: Rally a los pasos y defender el santuario.', style=discord.TextStyle.paragraph,
             max_length=MAX_OBJETIVOS, required=False, default=(g['objetivos'][:MAX_OBJETIVOS] or None) if g else None,
         )
+        self.add_item(discord.ui.Label(text='⭐ Meta de aclamación (la principal)',
+                                       description='Lo que más cuenta: el tablero va ordenado por ella',
+                                       component=self.aclamacion))
         self.add_item(discord.ui.Label(text='Meta de KP por jugador',
                                        description='KP de todo el KvK (HeroScroll)', component=self.kp))
-        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador', component=self.aclamacion))
         self.add_item(discord.ui.Label(text='Objetivos de este grupo (opcional)', component=self.objetivos))
         self.nombre = discord.ui.TextInput(
             placeholder='Vacío = su animal (Kraken, Ballenas, Tiburones…)', max_length=MAX_NOMBRE, required=False,
