@@ -216,8 +216,10 @@ async def msg_kvk(canal: discord.TextChannel):
     embed.add_field(
         name='📊 ¿Cómo se actualizan las stats? / How are stats updated?',
         value=(
-            'Al final de cada KvK, el liderazgo importa el Excel de heroscroll.com con `/kvk-importar`.\n'
-            '_At the end of each KvK, leadership imports the heroscroll.com Excel file with `/kvk-importar`._'
+            'El bot las lee solo de heroscroll.com cada 6 horas (el liderazgo pone el enlace del KvK con '
+            '`/kvk-actualizar`). También se puede subir el Excel con `/kvk-importar`.\n'
+            '_The bot reads them from heroscroll.com every 6 hours (leadership sets the KvK link with '
+            '`/kvk-actualizar`). The Excel can also be uploaded with `/kvk-importar`._'
         ),
         inline=False,
     )

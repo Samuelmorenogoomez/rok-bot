@@ -1,8 +1,12 @@
+import asyncio
 import io
+import json
+import re
+import aiohttp
 import openpyxl
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timezone
 
 from config import COLOR_BOT, ALIANZA_FULL, ALIANZA_TAG, REINO
@@ -82,6 +86,109 @@ def parse_excel(data: bytes) -> list[dict]:
         })
 
     return jugadores
+
+
+# ── HeroScroll por enlace (sin descargar el Excel) ─────────────────────────────
+
+ENLACE_HEROSCROLL = re.compile(r'^https://(www\.)?heroscroll\.com/rok/kvk-dashboard\?id=[\w-]+$')
+HORAS_AUTO        = 6  # cada cuánto se vuelve a leer HeroScroll solo (no hace falta más: escanean pocas veces al día)
+
+
+def leer_heroscroll(html: str) -> list[dict]:
+    """Gobernadores del reino REINO a partir de la página del dashboard.
+
+    HeroScroll no tiene API: la página trae los datos incrustados en trozos
+    self.__next_f.push([1, "…JSON escapado…"]) de Next.js. Se usan los deltas (lo hecho en el KvK),
+    igual que la sección Deltas del Excel.
+    """
+    trozos  = re.findall(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)', html)
+    payload = ''.join(json.loads(t) for t in trozos)
+    decoder = json.JSONDecoder()
+    gobernadores = None
+    for m in re.finditer(r'"governors":', payload):
+        try:
+            valor, _ = decoder.raw_decode(payload, m.end())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(valor, dict) and valor:
+            gobernadores = valor
+            break
+    if not gobernadores:
+        raise ValueError('no encuentro los gobernadores en la página (puede que HeroScroll haya cambiado su web)')
+
+    jugadores = []
+    for g in gobernadores.values():
+        if g.get('kingdom_id') != REINO:
+            continue
+        d  = g.get('deltas') or {}
+        t4 = d.get('t4_kills') or 0
+        t5 = d.get('t5_kills') or 0
+        if t4 < 0 and t5 < 0:
+            continue  # Datos negativos = jugador inactivo/excluido (mismo criterio que el Excel)
+        jugadores.append({
+            'governor_id':   str(g['governor_id']),
+            'governor_name': g.get('name') or str(g['governor_id']),
+            'kills_t4':      max(0, t4),
+            'kills_t5':      max(0, t5),
+            'kill_points':   max(0, d.get('killpoints') or 0),
+            'muertes':       max(0, d.get('deads') or 0),
+            'dkp':           max(0, g.get('dkp') or 0),
+        })
+    if not jugadores:
+        raise ValueError(f'el reino {REINO} no aparece en ese KvK')
+    return jugadores
+
+
+async def descargar_heroscroll(enlace: str) -> list[dict]:
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent': 'Mozilla/5.0 (rok-bot)'}) as sesion:
+        async with sesion.get(enlace) as resp:
+            if resp.status != 200:
+                raise ValueError(f'HeroScroll ha respondido con el error {resp.status}')
+            html = await resp.text()
+    # La página pesa varios MB: se procesa fuera del bucle para no congelar el bot
+    return await asyncio.to_thread(leer_heroscroll, html)
+
+
+async def enlace_heroscroll(guild_id: str, temporada_id: int) -> str | None:
+    """El enlace guardado solo vale para la temporada con la que se guardó (cada KvK tiene el suyo)."""
+    dato = await db.get_config(guild_id, 'heroscroll_url')
+    if not dato or '|' not in dato:
+        return None
+    tid, enlace = dato.split('|', 1)
+    return enlace if tid == str(temporada_id) else None
+
+
+async def guardar_importados(temporada_id: int, jugadores: list[dict]):
+    rows = [
+        (temporada_id, j['governor_id'], j['governor_name'], j['kills_t4'], j['kills_t5'],
+         j['kill_points'], j['muertes'], j['dkp'])
+        for j in jugadores
+    ]
+    await db.kvk_clear_import(temporada_id)
+    await db.kvk_insert_import(temporada_id, rows)
+
+
+def embed_importados(temporada, jugadores: list[dict], origen: str) -> discord.Embed:
+    """Resumen con el top 5 tras cargar datos (Excel o HeroScroll)."""
+    top5     = sorted(jugadores, key=lambda j: j['kills_t4'] + j['kills_t5'], reverse=True)[:5]
+    medallas = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
+    embed = discord.Embed(
+        title=f'✅ KvK importado — {temporada["nombre"]}',
+        description=f'**{len(jugadores)}** jugadores cargados desde {origen}',
+        color=0xFF4444,
+    )
+    lineas = []
+    for i, j in enumerate(top5):
+        total = j['kills_t4'] + j['kills_t5']
+        lineas.append(
+            f'{medallas[i]} **{j["governor_name"]}** — '
+            f'T4: `{j["kills_t4"]:,}` · T5: `{j["kills_t5"]:,}` · '
+            f'Total: `{total:,}` · 💀 `{j["muertes"]:,}`'
+        )
+    embed.add_field(name='🏆 Top 5', value='\n'.join(lineas), inline=False)
+    embed.set_footer(text='Usa /kvk-ranking para ver el ranking completo')
+    return embed
 
 
 def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.Guild = None) -> discord.Embed:
@@ -168,6 +275,10 @@ def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.
 class Kvk(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.auto_heroscroll.start()
+
+    def cog_unload(self):
+        self.auto_heroscroll.cancel()
 
     @app_commands.command(name='kvk-inicio', description='[ADMIN] Inicia una nueva temporada KvK y publica el anuncio')
     @app_commands.describe(
@@ -329,43 +440,69 @@ class Kvk(commands.Cog):
             await interaction.followup.send('❌ No se encontraron jugadores en el archivo.', ephemeral=True)
             return
 
-        # Insertar en BD
-        rows = [
-            (
-                temporada['id'],
-                j['governor_id'],
-                j['governor_name'],
-                j['kills_t4'],
-                j['kills_t5'],
-                j['kill_points'],
-                j['muertes'],
-                j['dkp'],
-            )
-            for j in jugadores
-        ]
-        await db.kvk_clear_import(temporada['id'])
-        await db.kvk_insert_import(temporada['id'], rows)
+        await guardar_importados(temporada['id'], jugadores)
+        await interaction.followup.send(embed=embed_importados(temporada, jugadores, f'`{archivo.filename}`'))
 
-        # Top 5 para el embed de resumen
-        top5 = sorted(jugadores, key=lambda j: j['kills_t4'] + j['kills_t5'], reverse=True)[:5]
-        medallas = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
+    @app_commands.command(name='kvk-actualizar',
+                          description=f'[ADMIN] Carga las stats del reino {REINO} desde el enlace de HeroScroll (luego se actualiza solo)')
+    @app_commands.describe(enlace='Enlace heroscroll.com/rok/kvk-dashboard?id=… (solo la primera vez o para cambiarlo)')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def kvk_actualizar(self, interaction: discord.Interaction, enlace: str = None):
+        gid       = str(interaction.guild_id)
+        temporada = await db.kvk_get_active(gid)
+        if not temporada:
+            await interaction.response.send_message(
+                '❌ No hay temporada KvK activa. Usa `/kvk-inicio` primero.', ephemeral=True)
+            return
+        if enlace:
+            enlace = enlace.strip()
+            if not ENLACE_HEROSCROLL.match(enlace):
+                await interaction.response.send_message(
+                    '❌ El enlace tiene que ser como `https://www.heroscroll.com/rok/kvk-dashboard?id=C13345`.',
+                    ephemeral=True)
+                return
+        else:
+            enlace = await enlace_heroscroll(gid, temporada['id'])
+            if not enlace:
+                await interaction.response.send_message(
+                    '❌ Aún no tengo el enlace de este KvK. Pásamelo: `/kvk-actualizar enlace:https://www.heroscroll.com/…`',
+                    ephemeral=True)
+                return
 
-        embed = discord.Embed(
-            title=f'✅ KvK importado — {temporada["nombre"]}',
-            description=f'**{len(jugadores)}** jugadores cargados desde `{archivo.filename}`',
-            color=0xFF4444,
-        )
-        lineas = []
-        for i, j in enumerate(top5):
-            total = j['kills_t4'] + j['kills_t5']
-            lineas.append(
-                f'{medallas[i]} **{j["governor_name"]}** — '
-                f'T4: `{j["kills_t4"]:,}` · T5: `{j["kills_t5"]:,}` · '
-                f'Total: `{total:,}` · 💀 `{j["muertes"]:,}`'
-            )
-        embed.add_field(name='🏆 Top 5', value='\n'.join(lineas), inline=False)
-        embed.set_footer(text='Usa /kvk-ranking para ver el ranking completo')
+        await interaction.response.defer()
+        try:
+            jugadores = await descargar_heroscroll(enlace)
+        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            await interaction.followup.send(f'❌ No he podido leer HeroScroll: {str(e) or "no responde"}.', ephemeral=True)
+            return
+
+        await db.set_config(gid, 'heroscroll_url', f'{temporada["id"]}|{enlace}')
+        await guardar_importados(temporada['id'], jugadores)
+        embed = embed_importados(temporada, jugadores, f'[HeroScroll]({enlace}) · solo el reino {REINO}')
+        embed.set_footer(text=f'Se actualiza solo cada {HORAS_AUTO} h mientras dure el KvK · /kvk-ranking para el ranking completo')
         await interaction.followup.send(embed=embed)
+
+    # ── Actualización automática desde HeroScroll ──────────────────────────────
+
+    @tasks.loop(hours=HORAS_AUTO)
+    async def auto_heroscroll(self):
+        for guild in self.bot.guilds:
+            gid = str(guild.id)
+            try:
+                temporada = await db.kvk_get_active(gid)
+                enlace    = await enlace_heroscroll(gid, temporada['id']) if temporada else None
+                if not enlace:
+                    continue
+                jugadores = await descargar_heroscroll(enlace)
+                await guardar_importados(temporada['id'], jugadores)
+                print(f'[kvk] HeroScroll: {len(jugadores)} gobernadores del {REINO} actualizados en {guild.name}')
+            except Exception as e:
+                # Si HeroScroll falla se conservan los datos anteriores y se reintenta en la siguiente vuelta
+                print(f'[kvk] No se pudo actualizar desde HeroScroll en {guild.name}: {type(e).__name__}: {e}')
+
+    @auto_heroscroll.before_loop
+    async def antes_auto_heroscroll(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name='kvk-ranking', description='[ADMIN] Muestra el ranking del KvK actual')
     @solo_en_canal('kvk')
@@ -533,6 +670,7 @@ class Kvk(commands.Cog):
     @kvk_inicio.error
     @kvk_fin.error
     @kvk_importar.error
+    @kvk_actualizar.error
     @kvk_reset.error
     @kvk_ranking.error
     @kvk_canal_recap.error
