@@ -163,6 +163,7 @@ async def init_db():
                 kill_points   INTEGER DEFAULT 0,
                 muertes       INTEGER DEFAULT 0,
                 dkp           INTEGER DEFAULT 0,
+                aclamacion    INTEGER DEFAULT 0,
                 imported_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (temporada_id, governor_id)
             );
@@ -278,6 +279,12 @@ async def init_db():
                 await db.commit()
             except Exception:
                 pass
+        # Migración: aclamación de HeroScroll en kvk_import (para comprobar la meta de aclamación)
+        try:
+            await db.execute('ALTER TABLE kvk_import ADD COLUMN aclamacion INTEGER DEFAULT 0')
+            await db.commit()
+        except Exception:
+            pass
         # Migración: CSV de ROKSTATS en kvk_guerras
         for columna in ('csv_inicial TEXT DEFAULT \'\'', 'csv_final TEXT DEFAULT \'\''):
             try:
@@ -621,8 +628,8 @@ async def kvk_insert_import(temporada_id: int, rows: list):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executemany('''
             INSERT INTO kvk_import
-                (temporada_id, governor_id, governor_name, kills_t4, kills_t5, kill_points, muertes, dkp)
-            VALUES (?,?,?,?,?,?,?,?)
+                (temporada_id, governor_id, governor_name, kills_t4, kills_t5, kill_points, muertes, dkp, aclamacion)
+            VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT(temporada_id, governor_id) DO UPDATE SET
                 governor_name = excluded.governor_name,
                 kills_t4      = excluded.kills_t4,
@@ -630,6 +637,7 @@ async def kvk_insert_import(temporada_id: int, rows: list):
                 kill_points   = excluded.kill_points,
                 muertes       = excluded.muertes,
                 dkp           = excluded.dkp,
+                aclamacion    = excluded.aclamacion,
                 imported_at   = CURRENT_TIMESTAMP
         ''', rows)
         await db.commit()

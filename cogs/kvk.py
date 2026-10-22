@@ -83,6 +83,7 @@ def parse_excel(data: bytes) -> list[dict]:
             'kill_points':   max(0, kill_pts  or 0),
             'muertes':       max(0, muertes   or 0),
             'dkp':           max(0, dkp       or 0),
+            'aclamacion':    0,  # el Excel no la trae; solo llega leyendo HeroScroll por enlace
         })
 
     return jugadores
@@ -133,6 +134,7 @@ def leer_heroscroll(html: str) -> list[dict]:
             'kill_points':   max(0, d.get('killpoints') or 0),
             'muertes':       max(0, d.get('deads') or 0),
             'dkp':           max(0, g.get('dkp') or 0),
+            'aclamacion':    max(0, d.get('acclaim') or 0),
         })
     if not jugadores:
         raise ValueError(f'el reino {REINO} no aparece en ese KvK')
@@ -162,7 +164,7 @@ async def enlace_heroscroll(guild_id: str, temporada_id: int) -> str | None:
 async def guardar_importados(temporada_id: int, jugadores: list[dict]):
     rows = [
         (temporada_id, j['governor_id'], j['governor_name'], j['kills_t4'], j['kills_t5'],
-         j['kill_points'], j['muertes'], j['dkp'])
+         j['kill_points'], j['muertes'], j['dkp'], j['aclamacion'])
         for j in jugadores
     ]
     await db.kvk_clear_import(temporada_id)
@@ -237,14 +239,12 @@ def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.
             for i, g in enumerate(guerra[:3])
         ]
         embed.add_field(name='🔥 Top KP en guerra', value='\n'.join(lineas_guerra), inline=False)
-        if temporada['meta_kp']:
-            from cogs.mge import fmt_poder
-            cumplen = sum(1 for g in guerra if g['ganados'] >= temporada['meta_kp'])
-            embed.add_field(
-                name='🎯 Meta de KP',
-                value=f'**{fmt_poder(temporada["meta_kp"])}** por jugador · ✅ la cumplieron **{cumplen}** de {len(guerra)}',
-                inline=False,
-            )
+
+    # Metas del KvK, comprobadas con los datos de HeroScroll
+    from cogs.guerra import lineas_cumplen
+    cumplen = lineas_cumplen(temporada, stats)
+    if cumplen:
+        embed.add_field(name='🎯 Metas del KvK', value='\n'.join(cumplen), inline=False)
 
     # Estadísticas globales de la alianza
     embed.add_field(
@@ -529,7 +529,13 @@ class Kvk(commands.Cog):
             return
 
         await interaction.response.defer()
-        from cogs.guerra import embeds_lista, enviar_embeds
+        from cogs.guerra import embeds_lista, enviar_embeds, cumple_kp, cumple_aclamacion, lineas_cumplen
+        from cogs.mge import fmt_poder
+
+        # Las metas solo se pueden comprobar con los datos importados (los manuales no traen KP ni aclamación)
+        con_metas = 'kill_points' in stats[0].keys()
+        meta_kp   = con_metas and temporada['meta_kp']
+        meta_acl  = con_metas and temporada['meta_aclamacion']
 
         medallas = ['🥇', '🥈', '🥉']
         lineas = []
@@ -540,15 +546,25 @@ class Kvk(commands.Cog):
             # Las filas de la BD no tienen .get(): los importados traen governor_name y los manuales username
             name  = s['governor_name'] if 'governor_name' in s.keys() else s['username']
             pos   = medallas[i] if i < 3 else f'**{i+1}.**'
-            lineas.append(
+            linea = (
                 f'{pos} **{name}** — '
                 f'T4: `{t4:,}` · T5: `{t5:,}` · '
                 f'Total: `{total:,}` · 💀 `{s["muertes"]:,}`'
             )
+            if meta_kp:
+                linea += f' · KP `{fmt_poder(s["kill_points"])}`{"✅" if cumple_kp(temporada, s) else ""}'
+            if meta_acl:
+                linea += f' · 🏅 `{fmt_poder(s["aclamacion"])}`{"✅" if cumple_aclamacion(temporada, s) else ""}'
+            lineas.append(linea)
 
         # Todos los jugadores, repartidos en tantos embeds como haga falta
-        embeds = embeds_lista(f'🏆 Ranking KvK — {temporada["nombre"]}', lineas, 0xFF4444, por_embed=25)
-        embeds[-1].set_footer(text=f'Fuente: {fuente} · {len(stats)} jugadores')
+        embeds = embeds_lista(f'🏆 Ranking KvK — {temporada["nombre"]}', lineas, 0xFF4444, por_embed=20)
+        if con_metas:
+            cumplen = lineas_cumplen(temporada, stats)
+            if cumplen:
+                embeds[0].add_field(name='🎯 Metas del KvK', value='\n'.join(cumplen), inline=False)
+        embeds[-1].set_footer(text=f'Fuente: {fuente} · {len(stats)} jugadores'
+                                   + (' · ✅ = meta cumplida' if meta_kp or meta_acl else ''))
         await enviar_embeds(interaction.followup.send, embeds)
 
     @app_commands.command(name='kvk-buscar', description='Busca las stats de un gobernador por nombre')
@@ -591,6 +607,18 @@ class Kvk(commands.Cog):
         embed.add_field(name='💀 Muertes',    value=f'{s["muertes"]:,}', inline=True)
         embed.add_field(name='Kill Points',   value=f'{s["kill_points"]:,}', inline=True)
         embed.add_field(name='DKP',           value=f'{s["dkp"]:,}', inline=True)
+
+        # Progreso hacia las metas del KvK (datos de HeroScroll)
+        from cogs.mge import fmt_poder
+        progreso = []
+        for icono, nombre_meta, hecho, meta in (('⚔️', 'KP', s['kill_points'], temporada['meta_kp']),
+                                                 ('🏅', 'Aclamación', s['aclamacion'], temporada['meta_aclamacion'])):
+            if meta:
+                pct = min(100, round(hecho * 100 / meta))
+                progreso.append(f'{icono} {nombre_meta}: **{fmt_poder(hecho)}** / {fmt_poder(meta)} '
+                                f'({pct} %){" ✅" if hecho >= meta else ""}')
+        if progreso:
+            embed.add_field(name='🎯 Metas del KvK', value='\n'.join(progreso), inline=False)
         embed.set_footer(text=f'Temporada: {temporada["nombre"]}')
         await interaction.response.send_message(embed=embed)
 

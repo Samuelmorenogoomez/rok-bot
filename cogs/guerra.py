@@ -82,6 +82,30 @@ def texto_objetivos(temporada) -> str:
     return '\n'.join(lineas)
 
 
+# Las metas se comprueban con los datos de HeroScroll (kvk_import): KP y aclamación hechos en todo el KvK
+
+def cumple_kp(temporada, s) -> bool:
+    return bool(temporada['meta_kp']) and s['kill_points'] >= temporada['meta_kp']
+
+
+def cumple_aclamacion(temporada, s) -> bool:
+    return bool(temporada['meta_aclamacion']) and s['aclamacion'] >= temporada['meta_aclamacion']
+
+
+def lineas_cumplen(temporada, stats: list) -> list[str]:
+    """'✅ la cumplen X de Y' de cada meta fijada; vacío si no hay metas o datos."""
+    lineas = []
+    if not stats:
+        return lineas
+    if temporada['meta_kp']:
+        n = sum(1 for s in stats if cumple_kp(temporada, s))
+        lineas.append(f'⚔️ Meta de KP: ✅ la cumplen **{n}** de {len(stats)}')
+    if temporada['meta_aclamacion']:
+        n = sum(1 for s in stats if cumple_aclamacion(temporada, s))
+        lineas.append(f'🏅 Meta de aclamación: ✅ la cumplen **{n}** de {len(stats)}')
+    return lineas
+
+
 async def anunciar(guild: discord.Guild, embed: discord.Embed):
     canal = buscar_canal(guild, 'kvk-chat') or buscar_canal(guild, 'kvk-anuncios')
     if not canal:
@@ -210,11 +234,11 @@ async def contenido_panel(guild: discord.Guild):
 
     embed = discord.Embed(title='⚔️ Modo guerra · Kill Points / War mode', description=texto, color=color)
     if temporada:
-        embed.add_field(
-            name='🎯 Objetivos del KvK / KvK goals',
-            value=(texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._')[:1024],
-            inline=False,
-        )
+        valor = texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._'
+        cumplen = lineas_cumplen(temporada, await db.kvk_get_import_ranking(temporada['id']))
+        if cumplen:
+            valor += '\n' + '\n'.join(cumplen) + '\n_Datos de HeroScroll · mira tu progreso con `/kvk-buscar`_'
+        embed.add_field(name='🎯 Objetivos del KvK / KvK goals', value=valor[:1024], inline=False)
     embed.add_field(name='❓ Cómo funciona / How it works', value=COMO_FUNCIONA, inline=False)
     pie = f'Temporada: {temporada["nombre"]}' if temporada else 'Sin temporada KvK activa'
     embed.set_footer(text=f'{pie} · {ALIANZA_TAG} · Reino {REINO}')
@@ -326,20 +350,12 @@ class PanelGuerraView(discord.ui.View):
             await interaction.response.send_message(
                 '📋 Todavía no hay KP de guerra esta temporada. / _No war KP yet this season._', ephemeral=True)
             return
-        meta = temporada['meta_kp']
         lineas = []
         for i, f in enumerate(filas):
-            pos   = MEDALLAS[i] if i < 3 else f'**{i + 1}.**'
-            marca = ' ✅' if meta and f['ganados'] >= meta else ''
-            lineas.append(f'{pos} **{f["nombre"]}** — `+{fmt(f["ganados"])}` KP · {f["guerras"]} ⚔️{marca}')
+            pos = MEDALLAS[i] if i < 3 else f'**{i + 1}.**'
+            lineas.append(f'{pos} **{f["nombre"]}** — `+{fmt(f["ganados"])}` KP · {f["guerras"]} ⚔️')
         embeds = embeds_lista(f'🏆 Bajas en guerra — {temporada["nombre"]}', lineas, COLOR_GUERRA)
-        if meta:
-            cumplen = sum(1 for f in filas if f['ganados'] >= meta)
-            embeds[0].add_field(name='🎯 Meta de KP / KP target',
-                                value=f'**{fmt_poder(meta)}** · ✅ la cumplen **{cumplen}** de {len(filas)}',
-                                inline=False)
-        embeds[-1].set_footer(text=f'KP hechos solo durante las guerras · ⚔️ = guerras en las que sumó'
-                                   f'{" · ✅ = meta de KP cumplida" if meta else ""} · {ALIANZA_TAG}')
+        embeds[-1].set_footer(text=f'KP hechos solo durante las guerras · ⚔️ = guerras en las que sumó · {ALIANZA_TAG}')
         await interaction.response.defer(ephemeral=True)
         await enviar_embeds(interaction.followup.send, embeds, ephemeral=True)
 
@@ -429,9 +445,11 @@ class MetasModal(discord.ui.Modal):
             discord.SelectOption(label='Sí, anunciarlo en kvk-anuncios', value='si', emoji='📢'),
         ])
         self.add_item(discord.ui.Label(text='Meta de KP por jugador',
-                                       description='El ✅ del ranking se mide con los KP hechos en las guerras',
+                                       description='Se comprueba con los KP de todo el KvK de HeroScroll',
                                        component=self.meta_kp))
-        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador', component=self.meta_aclamacion))
+        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador',
+                                       description='Se comprueba con la aclamación de HeroScroll',
+                                       component=self.meta_aclamacion))
         self.add_item(discord.ui.Label(text='Objetivos (opcional)', description='Lo que la alianza quiere conseguir',
                                        component=self.objetivos))
         self.add_item(discord.ui.Label(text='¿Avisar a la alianza?', component=self.anunciar))
