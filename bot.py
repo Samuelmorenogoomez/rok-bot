@@ -57,8 +57,17 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
                 pass
 
 
+_sincronizado = False
+
+
 @bot.event
 async def on_ready():
+    # on_ready salta también en cada reconexión: los comandos solo hace falta sincronizarlos al arrancar
+    global _sincronizado
+    if _sincronizado:
+        print(f'🔄 Reconectado como {bot.user}')
+        return
+    _sincronizado = True
     guild_id = os.getenv('GUILD_ID')
     if guild_id:
         guild = discord.Object(id=int(guild_id))

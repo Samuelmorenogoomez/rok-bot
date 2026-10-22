@@ -1023,7 +1023,7 @@ async def reclu_get_solicitud_activa(guild_id: str, user_id: str):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            'SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND user_id=? AND estado="pendiente"',
+            "SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND user_id=? AND estado='pendiente'",
             (guild_id, user_id)
         )
         return await cursor.fetchone()
@@ -1033,7 +1033,7 @@ async def reclu_get_por_canal(guild_id: str, canal_id: str):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            'SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND canal_id=? AND estado="pendiente"',
+            "SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND canal_id=? AND estado='pendiente'",
             (guild_id, canal_id)
         )
         return await cursor.fetchone()
@@ -1049,7 +1049,7 @@ async def reclu_get_pendientes(guild_id: str) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            'SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND estado="pendiente" ORDER BY created_at ASC',
+            "SELECT * FROM solicitudes_reclutamiento WHERE guild_id=? AND estado='pendiente' ORDER BY created_at ASC",
             (guild_id,)
         )
         return await cursor.fetchall()

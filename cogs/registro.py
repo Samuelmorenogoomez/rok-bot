@@ -221,6 +221,7 @@ async def asegurar_canal(guild: discord.Guild):
 class Registro(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._revisado = False  # la revisión de arranque solo una vez, no en cada reconexión
         self.purgar.start()
 
     def cog_unload(self):
@@ -243,6 +244,9 @@ class Registro(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        if self._revisado:
+            return
+        self._revisado = True
         for guild in self.bot.guilds:
             try:
                 canal = await asegurar_canal(guild)
