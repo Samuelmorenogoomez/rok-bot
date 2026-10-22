@@ -17,6 +17,7 @@ from discord.ext import commands
 from config import ALIANZA_TAG, REINO
 from db import database as db
 from cogs.registro import anotar
+from cogs.mge import parse_poder, fmt_poder
 
 ROLES_R4   = ('⚔️ R4', '👑 Liderazgo')
 ROL_GUERRA = '⚔️ Guerra'
@@ -66,6 +67,19 @@ async def enviar_embeds(enviar, embeds: list[discord.Embed], **kwargs):
         total += len(e)
     if grupo:
         await enviar(embeds=grupo, **kwargs)
+
+
+def texto_objetivos(temporada) -> str:
+    """Metas por jugador y objetivos del KvK, para el panel, el calendario y los anuncios ('' si no hay)."""
+    lineas = []
+    if temporada['meta_kp']:
+        lineas.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(temporada["meta_kp"])}** por jugador / _per player_')
+    if temporada['meta_aclamacion']:
+        lineas.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(temporada["meta_aclamacion"])}** '
+                      'por jugador / _per player_')
+    if temporada['objetivos']:
+        lineas.append(f'📋 {temporada["objetivos"]}')
+    return '\n'.join(lineas)
 
 
 async def anunciar(guild: discord.Guild, embed: discord.Embed):
@@ -195,6 +209,12 @@ async def contenido_panel(guild: discord.Guild):
                  f'📄 CSV inicial: **{n}** gobernadores · exportado {txt_exportado(guerra["csv_inicial"])}')
 
     embed = discord.Embed(title='⚔️ Modo guerra · Kill Points / War mode', description=texto, color=color)
+    if temporada:
+        embed.add_field(
+            name='🎯 Objetivos del KvK / KvK goals',
+            value=(texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._')[:1024],
+            inline=False,
+        )
     embed.add_field(name='❓ Cómo funciona / How it works', value=COMO_FUNCIONA, inline=False)
     pie = f'Temporada: {temporada["nombre"]}' if temporada else 'Sin temporada KvK activa'
     embed.set_footer(text=f'{pie} · {ALIANZA_TAG} · Reino {REINO}')
@@ -237,8 +257,8 @@ class PanelGuerraView(discord.ui.View):
     """Botones del panel. Con estado='todos' se registra la vista persistente con todos los botones."""
 
     VISIBLES = {
-        None:     {'activar', 'ranking'},
-        'activa': {'terminar', 'cancelar', 'ranking'},
+        None:     {'activar', 'ranking', 'metas'},
+        'activa': {'terminar', 'cancelar', 'ranking', 'metas'},
     }
 
     def __init__(self, estado='todos'):
@@ -306,14 +326,33 @@ class PanelGuerraView(discord.ui.View):
             await interaction.response.send_message(
                 '📋 Todavía no hay KP de guerra esta temporada. / _No war KP yet this season._', ephemeral=True)
             return
+        meta = temporada['meta_kp']
         lineas = []
         for i, f in enumerate(filas):
-            pos = MEDALLAS[i] if i < 3 else f'**{i + 1}.**'
-            lineas.append(f'{pos} **{f["nombre"]}** — `+{fmt(f["ganados"])}` KP · {f["guerras"]} ⚔️')
+            pos   = MEDALLAS[i] if i < 3 else f'**{i + 1}.**'
+            marca = ' ✅' if meta and f['ganados'] >= meta else ''
+            lineas.append(f'{pos} **{f["nombre"]}** — `+{fmt(f["ganados"])}` KP · {f["guerras"]} ⚔️{marca}')
         embeds = embeds_lista(f'🏆 Bajas en guerra — {temporada["nombre"]}', lineas, COLOR_GUERRA)
-        embeds[-1].set_footer(text=f'KP hechos solo durante las guerras · ⚔️ = guerras en las que sumó · {ALIANZA_TAG}')
+        if meta:
+            cumplen = sum(1 for f in filas if f['ganados'] >= meta)
+            embeds[0].add_field(name='🎯 Meta de KP / KP target',
+                                value=f'**{fmt_poder(meta)}** · ✅ la cumplen **{cumplen}** de {len(filas)}',
+                                inline=False)
+        embeds[-1].set_footer(text=f'KP hechos solo durante las guerras · ⚔️ = guerras en las que sumó'
+                                   f'{" · ✅ = meta de KP cumplida" if meta else ""} · {ALIANZA_TAG}')
         await interaction.response.defer(ephemeral=True)
         await enviar_embeds(interaction.followup.send, embeds, ephemeral=True)
+
+    @discord.ui.button(label='Metas', emoji='🎯', style=discord.ButtonStyle.primary, custom_id='guerra:metas')
+    async def metas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._solo_r4(interaction):
+            return
+        temporada = await db.kvk_get_active(str(interaction.guild_id))
+        if not temporada:
+            await interaction.response.send_message(
+                '❌ No hay temporada KvK activa. Créala primero con `/kvk-inicio`.', ephemeral=True)
+            return
+        await interaction.response.send_modal(MetasModal(temporada))
 
 
 class AnularView(discord.ui.View):
@@ -364,6 +403,82 @@ class CsvModal(discord.ui.Modal):
         else:
             texto = await terminar_guerra(interaction.guild, interaction.user, adjunto.filename, filas)
         await interaction.followup.send(texto, ephemeral=True)
+
+
+class MetasModal(discord.ui.Modal):
+    """Metas de KP y aclamación por jugador y objetivos del KvK; viene relleno con lo actual para editarlo."""
+
+    def __init__(self, temporada):
+        super().__init__(title='🎯 Metas y objetivos del KvK')
+        self.temporada_id = temporada['id']
+        self.meta_kp = discord.ui.TextInput(
+            placeholder='Ej: 300M · vacío = sin meta', max_length=20, required=False,
+            default=fmt_poder(temporada['meta_kp']) if temporada['meta_kp'] else None,
+        )
+        self.meta_aclamacion = discord.ui.TextInput(
+            placeholder='Ej: 25000 o 25K · vacío = sin meta', max_length=20, required=False,
+            default=fmt_poder(temporada['meta_aclamacion']) if temporada['meta_aclamacion'] else None,
+        )
+        self.objetivos = discord.ui.TextInput(
+            placeholder='Ej: Tomar el paso 6 el viernes. Nadie se queda sin tropas en el hospital.',
+            style=discord.TextStyle.paragraph, max_length=800, required=False,
+            default=temporada['objetivos'] or None,
+        )
+        self.anunciar = discord.ui.Select(options=[
+            discord.SelectOption(label='No, solo actualizar el panel', value='no', emoji='🔕', default=True),
+            discord.SelectOption(label='Sí, anunciarlo en kvk-anuncios', value='si', emoji='📢'),
+        ])
+        self.add_item(discord.ui.Label(text='Meta de KP por jugador',
+                                       description='El ✅ del ranking se mide con los KP hechos en las guerras',
+                                       component=self.meta_kp))
+        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador', component=self.meta_aclamacion))
+        self.add_item(discord.ui.Label(text='Objetivos (opcional)', description='Lo que la alianza quiere conseguir',
+                                       component=self.objetivos))
+        self.add_item(discord.ui.Label(text='¿Avisar a la alianza?', component=self.anunciar))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        metas = {}
+        for nombre, campo in (('KP', self.meta_kp), ('aclamación', self.meta_aclamacion)):
+            texto = campo.value.strip()
+            valor = parse_poder(texto) if texto else 0
+            if valor < 0:
+                await interaction.response.send_message(
+                    f'❌ Meta de {nombre} incorrecta. Usa `300M`, `25K` o `300000000` (o déjalo vacío).', ephemeral=True)
+                return
+            metas[nombre] = valor
+        objetivos = self.objetivos.value.strip()
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        await db.kvk_set_metas(self.temporada_id, metas['KP'], metas['aclamación'], objetivos)
+        temporada = await db.kvk_get_active(str(guild.id))
+        await refrescar_panel(guild)
+        from cogs.kvk import refrescar_calendario
+        refrescar_calendario(guild)
+        anotar(guild, interaction.user, '🎯 Metas KvK',
+               f'KP {fmt_poder(metas["KP"]) if metas["KP"] else "—"} · '
+               f'aclamación {fmt_poder(metas["aclamación"]) if metas["aclamación"] else "—"}'
+               + (f' · objetivos: {objetivos}' if objetivos else ''))
+
+        respuesta = '✅ Metas guardadas. El panel y el calendario ya las muestran.'
+        if self.anunciar.values and self.anunciar.values[0] == 'si' and temporada:
+            canal = buscar_canal(guild, 'kvk-anuncios') or buscar_canal(guild, 'kvk-chat')
+            embed = discord.Embed(
+                title=f'🎯 Objetivos del KvK / KvK goals — {temporada["nombre"]}',
+                description=texto_objetivos(temporada) or '_Sin metas por ahora. / No goals for now._',
+                color=COLOR_GUERRA,
+            )
+            embed.set_footer(text=f'Los KP de las guerras se cuentan solos con ROKSTATS · {ALIANZA_TAG} · Reino {REINO}')
+            if not canal:
+                respuesta += '\n⚠️ No encontré #kvk-anuncios; no se ha anunciado.'
+            else:
+                try:
+                    await canal.send(embed=embed)
+                    respuesta += f'\n📢 Anunciado en {canal.mention}.'
+                except discord.HTTPException as e:
+                    print(f'[guerra] No se pudieron anunciar las metas en {canal.name}: {e}')
+                    respuesta += f'\n⚠️ No he podido escribir en {canal.mention}.'
+        await interaction.followup.send(respuesta, ephemeral=True)
 
 
 # ── Cambios de estado ──────────────────────────────────────────────────────────

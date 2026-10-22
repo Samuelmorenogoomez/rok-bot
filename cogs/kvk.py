@@ -130,6 +130,14 @@ def build_recap_embed(temporada, stats: list, guerra: list = (), guild: discord.
             for i, g in enumerate(guerra[:3])
         ]
         embed.add_field(name='🔥 Top KP en guerra', value='\n'.join(lineas_guerra), inline=False)
+        if temporada['meta_kp']:
+            from cogs.mge import fmt_poder
+            cumplen = sum(1 for g in guerra if g['ganados'] >= temporada['meta_kp'])
+            embed.add_field(
+                name='🎯 Meta de KP',
+                value=f'**{fmt_poder(temporada["meta_kp"])}** por jugador · ✅ la cumplieron **{cumplen}** de {len(guerra)}',
+                inline=False,
+            )
 
     # Estadísticas globales de la alianza
     embed.add_field(

@@ -55,7 +55,10 @@ async def init_db():
                 fecha_inicio  TEXT DEFAULT '',
                 fecha_fin     TEXT DEFAULT '',
                 recuperacion  INTEGER DEFAULT 0,
-                guerra_activa INTEGER DEFAULT 0
+                guerra_activa INTEGER DEFAULT 0,
+                meta_kp         INTEGER DEFAULT 0,
+                meta_aclamacion INTEGER DEFAULT 0,
+                objetivos       TEXT    DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS kvk_baseline_guerra (
@@ -266,6 +269,9 @@ async def init_db():
             'fecha_fin TEXT DEFAULT \'\'',
             'recuperacion INTEGER DEFAULT 0',
             'guerra_activa INTEGER DEFAULT 0',
+            'meta_kp INTEGER DEFAULT 0',
+            'meta_aclamacion INTEGER DEFAULT 0',
+            'objetivos TEXT DEFAULT \'\'',
         ):
             try:
                 await db.execute(f'ALTER TABLE kvk_temporadas ADD COLUMN {columna}')
@@ -450,6 +456,16 @@ async def kvk_get_active(guild_id: str):
             (guild_id,)
         )
         return await cursor.fetchone()
+
+
+async def kvk_set_metas(temporada_id: int, meta_kp: int, meta_aclamacion: int, objetivos: str):
+    """Metas por jugador (0 = sin meta) y objetivos del KvK; se pueden cambiar con la temporada en curso."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'UPDATE kvk_temporadas SET meta_kp=?, meta_aclamacion=?, objetivos=? WHERE id=?',
+            (meta_kp, meta_aclamacion, objetivos, temporada_id)
+        )
+        await db.commit()
 
 
 async def kvk_upsert_stats(temporada_id: int, guild_id: str, user_id: str,

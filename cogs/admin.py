@@ -55,9 +55,13 @@ async def build_panel_embed(guild: discord.Guild) -> discord.Embed:
                       for i, s in enumerate(importados[:3])]
         if not lineas:
             lineas = ['_Todavía no hay datos de este KvK_']
+        from cogs.guerra import texto_objetivos
+        objetivos = texto_objetivos(temporada)
+        if objetivos:
+            lineas.append(objetivos)
         embed.add_field(
             name=f'⚔️ KvK: {temporada["nombre"]}',
-            value='\n'.join(lineas),
+            value='\n'.join(lineas)[:1024],
             inline=False,
         )
     else:

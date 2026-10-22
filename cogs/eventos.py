@@ -143,7 +143,11 @@ async def build_semana_embed(guild_id: str) -> discord.Embed:
             valor += f'\n📖 {temporada["historia"]}'
         if temporada['fecha_inicio'] or temporada['fecha_fin']:
             valor += f'\n📅 {temporada["fecha_inicio"] or "?"} → {temporada["fecha_fin"] or "?"}'
-        embed.add_field(name=f'⚔️ KvK: {temporada["nombre"]}', value=valor, inline=False)
+        from cogs.guerra import texto_objetivos
+        objetivos = texto_objetivos(temporada)
+        if objetivos:
+            valor += f'\n{objetivos}'
+        embed.add_field(name=f'⚔️ KvK: {temporada["nombre"]}', value=valor[:1024], inline=False)
 
     # ── MGEs activos ──────────────────────────────────────────────────────────
     mges = [m for m in await db.mge_get_eventos_activos(guild_id) if m['mensaje_id']]  # solo los que tienen tablón
