@@ -95,8 +95,9 @@ def parse_excel(data: bytes) -> list[dict]:
             'kill_points':   max(0, kill_pts  or 0),
             'muertes':       max(0, muertes   or 0),
             'dkp':           max(0, dkp       or 0),
-            'aclamacion':    0,  # el Excel no trae ni la aclamación ni el poder ganado: solo HeroScroll por enlace
+            'aclamacion':    0,  # el Excel no trae ni la aclamación ni el poder: solo HeroScroll por enlace
             'poder_delta':   0,
+            'poder_inicio':  0,
         })
 
     return jugadores
@@ -149,6 +150,8 @@ def leer_heroscroll(html: str) -> list[dict]:
             'dkp':           max(0, g.get('dkp') or 0),
             'aclamacion':    max(0, d.get('acclaim') or 0),
             'poder_delta':   d.get('power') or 0,  # puede ser negativo: poder perdido en el KvK
+            # Poder al empezar el KvK = poder actual − lo ganado desde entonces; decide su grupo de metas
+            'poder_inicio':  max(0, (g.get('power') or 0) - (d.get('power') or 0)),
         })
     if not jugadores:
         raise ValueError(f'el reino {REINO} no aparece en ese KvK')
@@ -178,7 +181,7 @@ async def enlace_heroscroll(guild_id: str, temporada_id: int) -> str | None:
 async def guardar_importados(guild_id: str, temporada_id: int, jugadores: list[dict]):
     rows = [
         (temporada_id, j['governor_id'], j['governor_name'], j['kills_t4'], j['kills_t5'],
-         j['kill_points'], j['muertes'], j['dkp'], j['aclamacion'], j['poder_delta'])
+         j['kill_points'], j['muertes'], j['dkp'], j['aclamacion'], j['poder_delta'], j['poder_inicio'])
         for j in jugadores
     ]
     await db.kvk_clear_import(temporada_id)
@@ -206,20 +209,24 @@ def _contra_meta(hecho: int, meta: int) -> str:
     return f' / {fmt_poder(meta)} (faltan {fmt_poder(meta - hecho)})'
 
 
-def linea_tablero(pos: int, s, temporada) -> str:
+def linea_tablero(pos: int, s, grupos: list[dict]) -> str:
+    """Una línea por gobernador, con las metas de su grupo de poder (y el icono del grupo si hay varios)."""
     from cogs.mge import fmt_poder
+    from cogs.guerra import indice_grupo, ICONOS_GRUPO
     medalla = ['🥇', '🥈', '🥉'][pos - 1] if pos <= 3 else f'`{pos:>3}.`'
     nombre  = discord.utils.escape_markdown(s['governor_name'])
-    return (f'{medalla} **{nombre}** — '
-            f'⚔️ `{fmt_poder(s["kill_points"])}`{_contra_meta(s["kill_points"], temporada["meta_kp"])} · '
-            f'🏅 `{fmt_poder(s["aclamacion"])}`{_contra_meta(s["aclamacion"], temporada["meta_aclamacion"])} · '
+    i       = indice_grupo(grupos, s)
+    g       = grupos[i] if i is not None else {'kp': 0, 'aclamacion': 0}
+    icono   = f' {ICONOS_GRUPO[i]}' if len(grupos) > 1 else ''
+    return (f'{medalla} **{nombre}**{icono} — '
+            f'⚔️ `{fmt_poder(s["kill_points"])}`{_contra_meta(s["kill_points"], g["kp"])} · '
+            f'🏅 `{fmt_poder(s["aclamacion"])}`{_contra_meta(s["aclamacion"], g["aclamacion"])} · '
             f'💪 `{fmt_signo(s["poder_delta"])}`')
 
 
 async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
     """Mensajes del tablero (cada uno con sus embeds): todos los gobernadores del reino por KP del KvK."""
-    from cogs.mge import fmt_poder
-    from cogs.guerra import cumple_kp, cumple_aclamacion
+    from cogs.guerra import grupos_metas, lineas_cumplen
     gid       = str(guild.id)
     temporada = await db.kvk_get_active(gid)
     stats     = await db.kvk_get_import_ranking(temporada['id']) if temporada else []
@@ -231,16 +238,11 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
                          f'y luego se actualizan solos.\nNo data yet for this KvK._'),
         )]]
 
-    cabecera = []
-    if temporada['meta_kp']:
-        n = sum(1 for s in stats if cumple_kp(temporada, s))
-        cabecera.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(temporada["meta_kp"])}** · ✅ **{n}** de {len(stats)}')
-    if temporada['meta_aclamacion']:
-        n = sum(1 for s in stats if cumple_aclamacion(temporada, s))
-        cabecera.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(temporada["meta_aclamacion"])}** · '
-                        f'✅ **{n}** de {len(stats)}')
-    if not cabecera:
-        cabecera.append('_Sin metas todavía: el liderazgo las pone con 🎯 Metas en el panel de guerra._')
+    grupos   = grupos_metas(temporada)
+    cabecera = lineas_cumplen(temporada, stats) or [
+        '_Sin metas todavía: el liderazgo las pone con 🎯 Metas en el panel de guerra._']
+    if len(grupos) > 1:
+        cabecera.append('_El número junto al nombre es su grupo según el poder al empezar el KvK._')
     ts = await db.get_config(gid, 'kvk_datos_ts')
     if ts:
         cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · HeroScroll · Reino {REINO}')
@@ -248,7 +250,7 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
     ordenados = sorted(stats, key=lambda s: s['kill_points'], reverse=True)
     bloques, actual = [], '\n'.join(cabecera) + '\n\n'
     for pos, s in enumerate(ordenados, 1):
-        linea = linea_tablero(pos, s, temporada)
+        linea = linea_tablero(pos, s, grupos)
         if len(actual) + len(linea) + 1 > MAX_DESCRIPCION:
             bloques.append(actual)
             actual = ''
@@ -684,13 +686,15 @@ class Kvk(commands.Cog):
             return
 
         await interaction.response.defer()
-        from cogs.guerra import embeds_lista, enviar_embeds, cumple_kp, cumple_aclamacion, lineas_cumplen
+        from cogs.guerra import (embeds_lista, enviar_embeds, cumple_kp, cumple_aclamacion, lineas_cumplen,
+                                 grupos_metas, indice_grupo, ICONOS_GRUPO)
         from cogs.mge import fmt_poder
 
         # Las metas solo se pueden comprobar con los datos importados (los manuales no traen KP ni aclamación)
         con_metas = 'kill_points' in stats[0].keys()
-        meta_kp   = con_metas and temporada['meta_kp']
-        meta_acl  = con_metas and temporada['meta_aclamacion']
+        grupos    = grupos_metas(temporada) if con_metas else []
+        meta_kp   = any(g['kp'] for g in grupos)
+        meta_acl  = any(g['aclamacion'] for g in grupos)
 
         medallas = ['🥇', '🥈', '🥉']
         lineas = []
@@ -701,15 +705,16 @@ class Kvk(commands.Cog):
             # Las filas de la BD no tienen .get(): los importados traen governor_name y los manuales username
             name  = s['governor_name'] if 'governor_name' in s.keys() else s['username']
             pos   = medallas[i] if i < 3 else f'**{i+1}.**'
+            icono = f' {ICONOS_GRUPO[indice_grupo(grupos, s)]}' if len(grupos) > 1 else ''
             linea = (
-                f'{pos} **{name}** — '
+                f'{pos} **{name}**{icono} — '
                 f'T4: `{t4:,}` · T5: `{t5:,}` · '
                 f'Total: `{total:,}` · 💀 `{s["muertes"]:,}`'
             )
             if meta_kp:
-                linea += f' · KP `{fmt_poder(s["kill_points"])}`{"✅" if cumple_kp(temporada, s) else ""}'
+                linea += f' · KP `{fmt_poder(s["kill_points"])}`{"✅" if cumple_kp(temporada, s, grupos) else ""}'
             if meta_acl:
-                linea += f' · 🏅 `{fmt_poder(s["aclamacion"])}`{"✅" if cumple_aclamacion(temporada, s) else ""}'
+                linea += f' · 🏅 `{fmt_poder(s["aclamacion"])}`{"✅" if cumple_aclamacion(temporada, s, grupos) else ""}'
             lineas.append(linea)
 
         # Todos los jugadores, repartidos en tantos embeds como haga falta
@@ -763,15 +768,22 @@ class Kvk(commands.Cog):
         embed.add_field(name='Kill Points',   value=f'{s["kill_points"]:,}', inline=True)
         embed.add_field(name='DKP',           value=f'{s["dkp"]:,}', inline=True)
 
-        # Progreso hacia las metas del KvK (datos de HeroScroll)
+        # Progreso hacia las metas de su grupo de poder (datos de HeroScroll)
         from cogs.mge import fmt_poder
+        from cogs.guerra import grupos_metas, indice_grupo, etiqueta_grupo
+        grupos   = grupos_metas(temporada)
+        i        = indice_grupo(grupos, s)
         progreso = []
-        for icono, nombre_meta, hecho, meta in (('⚔️', 'KP', s['kill_points'], temporada['meta_kp']),
-                                                 ('🏅', 'Aclamación', s['aclamacion'], temporada['meta_aclamacion'])):
-            if meta:
-                pct = min(100, round(hecho * 100 / meta))
-                progreso.append(f'{icono} {nombre_meta}: **{fmt_poder(hecho)}** / {fmt_poder(meta)} '
-                                f'({pct} %){" ✅" if hecho >= meta else ""}')
+        if i is not None:
+            if len(grupos) > 1:
+                progreso.append(f'Grupo **{etiqueta_grupo(grupos, i)}** · poder al empezar el KvK: '
+                                f'{fmt_poder(s["poder_inicio"])}')
+            for icono, nombre_meta, hecho, meta in (('⚔️', 'KP', s['kill_points'], grupos[i]['kp']),
+                                                     ('🏅', 'Aclamación', s['aclamacion'], grupos[i]['aclamacion'])):
+                if meta:
+                    pct = min(100, round(hecho * 100 / meta))
+                    progreso.append(f'{icono} {nombre_meta}: **{fmt_poder(hecho)}** / {fmt_poder(meta)} '
+                                    f'({pct} %){" ✅" if hecho >= meta else ""}')
         if progreso:
             embed.add_field(name='🎯 Metas del KvK', value='\n'.join(progreso), inline=False)
         embed.set_footer(text=f'Temporada: {temporada["nombre"]}')

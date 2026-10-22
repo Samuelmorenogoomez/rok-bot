@@ -6,6 +6,7 @@ KP final − KP inicial de cada gobernador. Los jugadores no tienen que hacer na
 """
 import csv
 import io
+import json
 import re
 import time
 import unicodedata
@@ -69,40 +70,131 @@ async def enviar_embeds(enviar, embeds: list[discord.Embed], **kwargs):
         await enviar(embeds=grupo, **kwargs)
 
 
-def texto_objetivos(temporada) -> str:
-    """Metas por jugador y objetivos del KvK, para el panel, el calendario y los anuncios ('' si no hay)."""
+# ── Metas del KvK por grupos de poder ──────────────────────────────────────────
+# Cada grupo junta a los gobernadores con un poder al empezar el KvK desde `desde` hasta el `desde` del siguiente,
+# y tiene sus metas de KP y aclamación y sus objetivos. Se comprueban con los datos de HeroScroll (kvk_import).
+
+MAX_GRUPOS     = 8    # para que todo quepa en un embed (6000 caracteres)
+MAX_OBJETIVOS  = 300  # caracteres de objetivos por grupo
+ICONOS_GRUPO   = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣']
+
+
+def grupos_metas(temporada) -> list[dict]:
+    """[{desde, kp, aclamacion, objetivos}] ordenados por poder; [] si no hay metas.
+
+    Si aún no hay grupos guardados se usa la meta única de antes como un grupo para todos.
+    """
+    if temporada['grupos_metas']:
+        try:
+            return sorted(json.loads(temporada['grupos_metas']), key=lambda g: g['desde'])
+        except (ValueError, KeyError, TypeError):
+            print(f'[guerra] grupos_metas ilegibles en la temporada #{temporada["id"]}')
+    if temporada['meta_kp'] or temporada['meta_aclamacion'] or temporada['objetivos']:
+        return [{'desde': 0, 'kp': temporada['meta_kp'], 'aclamacion': temporada['meta_aclamacion'],
+                 'objetivos': temporada['objetivos']}]
+    return []
+
+
+def nombre_grupo(grupos: list[dict], i: int) -> str:
+    """'Menos de 60M', '60M – 80M', '80M o más' o 'Todos' si es el único."""
+    desde = grupos[i]['desde']
+    hasta = grupos[i + 1]['desde'] if i + 1 < len(grupos) else None
+    if hasta is None:
+        return 'Todos' if desde == 0 else f'{fmt_poder(desde)} o más'
+    if desde == 0:
+        return f'Menos de {fmt_poder(hasta)}'
+    return f'{fmt_poder(desde)} – {fmt_poder(hasta)}'
+
+
+def etiqueta_grupo(grupos: list[dict], i: int) -> str:
+    """'2️⃣ 60M – 80M'; vacío si solo hay un grupo (entonces las metas son para todos)."""
+    return '' if len(grupos) <= 1 else f'{ICONOS_GRUPO[i]} {nombre_grupo(grupos, i)}'
+
+
+def indice_grupo(grupos: list[dict], s) -> int | None:
+    """Grupo del gobernador según su poder al empezar el KvK."""
+    if not grupos:
+        return None
+    indice = 0
+    for i, g in enumerate(grupos):
+        if s['poder_inicio'] >= g['desde']:
+            indice = i
+    return indice
+
+
+def metas_de(temporada, s, grupos: list[dict] = None) -> dict | None:
+    grupos = grupos_metas(temporada) if grupos is None else grupos
+    i = indice_grupo(grupos, s)
+    return grupos[i] if i is not None else None
+
+
+def cumple_kp(temporada, s, grupos: list[dict] = None) -> bool:
+    g = metas_de(temporada, s, grupos)
+    return bool(g and g['kp']) and s['kill_points'] >= g['kp']
+
+
+def cumple_aclamacion(temporada, s, grupos: list[dict] = None) -> bool:
+    g = metas_de(temporada, s, grupos)
+    return bool(g and g['aclamacion']) and s['aclamacion'] >= g['aclamacion']
+
+
+def texto_metas(g: dict) -> list[str]:
     lineas = []
-    if temporada['meta_kp']:
-        lineas.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(temporada["meta_kp"])}** por jugador / _per player_')
-    if temporada['meta_aclamacion']:
-        lineas.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(temporada["meta_aclamacion"])}** '
+    if g['kp']:
+        lineas.append(f'⚔️ Meta de KP / _KP target_: **{fmt_poder(g["kp"])}** por jugador / _per player_')
+    if g['aclamacion']:
+        lineas.append(f'🏅 Meta de aclamación / _Acclaim target_: **{fmt_poder(g["aclamacion"])}** '
                       'por jugador / _per player_')
-    if temporada['objetivos']:
-        lineas.append(f'📋 {temporada["objetivos"]}')
-    return '\n'.join(lineas)
+    if g['objetivos']:
+        lineas.append(f'📋 {g["objetivos"]}')
+    return lineas
 
 
-# Las metas se comprueban con los datos de HeroScroll (kvk_import): KP y aclamación hechos en todo el KvK
+def texto_objetivos(temporada) -> str:
+    """Metas y objetivos de cada grupo, para el panel y los anuncios ('' si no hay)."""
+    grupos = grupos_metas(temporada)
+    if len(grupos) == 1:
+        return '\n'.join(texto_metas(grupos[0]))
+    return '\n\n'.join(
+        f'**{etiqueta_grupo(grupos, i)}** de poder al empezar / _power at start_\n'
+        + '\n'.join(texto_metas(g) or ['_Sin metas / No goals_'])
+        for i, g in enumerate(grupos)
+    )
 
-def cumple_kp(temporada, s) -> bool:
-    return bool(temporada['meta_kp']) and s['kill_points'] >= temporada['meta_kp']
 
-
-def cumple_aclamacion(temporada, s) -> bool:
-    return bool(temporada['meta_aclamacion']) and s['aclamacion'] >= temporada['meta_aclamacion']
+def texto_resumen(temporada) -> str:
+    """Versión corta (sin los objetivos si hay varios grupos) para el calendario y /panel."""
+    grupos = grupos_metas(temporada)
+    if len(grupos) <= 1:
+        return texto_objetivos(temporada)
+    lineas = []
+    for i, g in enumerate(grupos):
+        metas = ' · '.join(x for x in (f'⚔️ {fmt_poder(g["kp"])}' if g['kp'] else '',
+                                       f'🏅 {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
+        lineas.append(f'{etiqueta_grupo(grupos, i)}: {metas or "sin metas"}')
+    return '🎯 Metas por poder al empezar el KvK:\n' + '\n'.join(lineas)
 
 
 def lineas_cumplen(temporada, stats: list) -> list[str]:
-    """'✅ la cumplen X de Y' de cada meta fijada; vacío si no hay metas o datos."""
+    """Cuántos cumplen cada meta, grupo a grupo; vacío si no hay metas o datos."""
+    grupos = grupos_metas(temporada)
+    if not stats or not grupos:
+        return []
+    miembros = [[] for _ in grupos]
+    for s in stats:
+        miembros[indice_grupo(grupos, s)].append(s)
     lineas = []
-    if not stats:
-        return lineas
-    if temporada['meta_kp']:
-        n = sum(1 for s in stats if cumple_kp(temporada, s))
-        lineas.append(f'⚔️ Meta de KP: ✅ la cumplen **{n}** de {len(stats)}')
-    if temporada['meta_aclamacion']:
-        n = sum(1 for s in stats if cumple_aclamacion(temporada, s))
-        lineas.append(f'🏅 Meta de aclamación: ✅ la cumplen **{n}** de {len(stats)}')
+    for i, g in enumerate(grupos):
+        partes = []
+        if g['kp']:
+            n = sum(1 for s in miembros[i] if s['kill_points'] >= g['kp'])
+            partes.append(f'⚔️ KP **{fmt_poder(g["kp"])}**: ✅ **{n}** de {len(miembros[i])}')
+        if g['aclamacion']:
+            n = sum(1 for s in miembros[i] if s['aclamacion'] >= g['aclamacion'])
+            partes.append(f'🏅 Aclamación **{fmt_poder(g["aclamacion"])}**: ✅ **{n}** de {len(miembros[i])}')
+        if partes:
+            prefijo = f'{etiqueta_grupo(grupos, i)} · ' if len(grupos) > 1 else ''
+            lineas.append(prefijo + ' · '.join(partes))
     return lineas
 
 
@@ -234,11 +326,21 @@ async def contenido_panel(guild: discord.Guild):
 
     embed = discord.Embed(title='⚔️ Modo guerra · Kill Points / War mode', description=texto, color=color)
     if temporada:
-        valor = texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._'
+        grupos  = grupos_metas(temporada)
         cumplen = lineas_cumplen(temporada, await db.kvk_get_import_ranking(temporada['id']))
-        if cumplen:
-            valor += '\n' + '\n'.join(cumplen) + '\n_Datos de HeroScroll · mira tu progreso con `/kvk-buscar`_'
-        embed.add_field(name='🎯 Objetivos del KvK / KvK goals', value=valor[:1024], inline=False)
+        nota    = '_Datos de HeroScroll · mira tu progreso con `/kvk-buscar`_'
+        if len(grupos) <= 1:
+            valor = texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._'
+            if cumplen:
+                valor += '\n' + '\n'.join(cumplen) + '\n' + nota
+            embed.add_field(name='🎯 Objetivos del KvK / KvK goals', value=valor[:1024], inline=False)
+        else:
+            for i, g in enumerate(grupos):
+                embed.add_field(name=f'🎯 {etiqueta_grupo(grupos, i)} de poder al empezar el KvK',
+                                value=('\n'.join(texto_metas(g)) or '_Sin metas / No goals_')[:1024], inline=False)
+            if cumplen:
+                embed.add_field(name='✅ Quién las cumple / Who meets them',
+                                value=('\n'.join(cumplen) + '\n' + nota)[:1024], inline=False)
     embed.add_field(name='❓ Cómo funciona / How it works', value=COMO_FUNCIONA, inline=False)
     pie = f'Temporada: {temporada["nombre"]}' if temporada else 'Sin temporada KvK activa'
     embed.set_footer(text=f'{pie} · {ALIANZA_TAG} · Reino {REINO}')
@@ -368,7 +470,8 @@ class PanelGuerraView(discord.ui.View):
             await interaction.response.send_message(
                 '❌ No hay temporada KvK activa. Créala primero con `/kvk-inicio`.', ephemeral=True)
             return
-        await interaction.response.send_modal(MetasModal(temporada))
+        panel = MetasPanelView(temporada)
+        await interaction.response.send_message(panel.contenido(), view=panel, ephemeral=True)
 
 
 class AnularView(discord.ui.View):
@@ -421,83 +524,170 @@ class CsvModal(discord.ui.Modal):
         await interaction.followup.send(texto, ephemeral=True)
 
 
-class MetasModal(discord.ui.Modal):
-    """Metas de KP y aclamación por jugador y objetivos del KvK; viene relleno con lo actual para editarlo."""
+class MetasPanelView(discord.ui.View):
+    """Panel privado del R4 con los grupos de metas: elegir uno lo abre para editar, ➕ añade otro."""
 
-    def __init__(self, temporada):
-        super().__init__(title='🎯 Metas y objetivos del KvK')
+    def __init__(self, temporada, aviso: str = ''):
+        super().__init__(timeout=900)
         self.temporada_id = temporada['id']
-        self.meta_kp = discord.ui.TextInput(
-            placeholder='Ej: 300M · vacío = sin meta', max_length=20, required=False,
-            default=fmt_poder(temporada['meta_kp']) if temporada['meta_kp'] else None,
-        )
-        self.meta_aclamacion = discord.ui.TextInput(
-            placeholder='Ej: 25000 o 25K · vacío = sin meta', max_length=20, required=False,
-            default=fmt_poder(temporada['meta_aclamacion']) if temporada['meta_aclamacion'] else None,
-        )
+        self.grupos       = grupos_metas(temporada)
+        self.aviso        = aviso
+
+        opciones = []
+        for i, g in enumerate(self.grupos):
+            metas = ' · '.join(x for x in (f'KP {fmt_poder(g["kp"])}' if g['kp'] else '',
+                                           f'Aclamación {fmt_poder(g["aclamacion"])}' if g['aclamacion'] else '') if x)
+            opciones.append(discord.SelectOption(label=f'{nombre_grupo(self.grupos, i)}'[:100], value=str(i),
+                                                 emoji=ICONOS_GRUPO[i], description=(metas or 'Sin metas')[:100]))
+        if len(self.grupos) < MAX_GRUPOS:
+            opciones.append(discord.SelectOption(label='Añadir grupo de poder', value='nuevo', emoji='➕'))
+        selector = discord.ui.Select(placeholder='Elige un grupo para editarlo o añade uno nuevo', options=opciones)
+        selector.callback = self._elegir
+        self.add_item(selector)
+
+        anunciar = discord.ui.Button(label='Anunciar', emoji='📢', style=discord.ButtonStyle.success,
+                                     disabled=not self.grupos)
+        anunciar.callback = self._anunciar
+        self.add_item(anunciar)
+        cerrar = discord.ui.Button(label='Cerrar', emoji='✖️', style=discord.ButtonStyle.secondary)
+        cerrar.callback = self._cerrar
+        self.add_item(cerrar)
+
+    def contenido(self) -> str:
+        texto = '## 🎯 Metas y objetivos del KvK\n'
+        if not self.grupos:
+            texto += '_Sin metas todavía. Elige **➕ Añadir grupo de poder** en el desplegable._\n'
+        for i, g in enumerate(self.grupos):
+            metas = ' · '.join(x for x in (f'⚔️ KP **{fmt_poder(g["kp"])}**' if g['kp'] else '',
+                                           f'🏅 **{fmt_poder(g["aclamacion"])}**' if g['aclamacion'] else '') if x)
+            texto += (f'{ICONOS_GRUPO[i]} **{nombre_grupo(self.grupos, i)}** — {metas or "sin metas"}'
+                      + (' · 📋' if g['objetivos'] else '') + '\n')
+        texto += ('_El grupo de cada jugador sale de su **poder al empezar el KvK** (HeroScroll). '
+                  'Con un solo grupo, las metas son para todos. Para quitar un grupo, vacía todos sus campos._')
+        if self.aviso:
+            texto += f'\n> {self.aviso}'
+        return texto
+
+    async def _elegir(self, interaction: discord.Interaction):
+        valor = interaction.data['values'][0]
+        await interaction.response.send_modal(GrupoModal(self, None if valor == 'nuevo' else int(valor)))
+
+    async def _anunciar(self, interaction: discord.Interaction):
+        guild     = interaction.guild
+        temporada = await db.kvk_get_active(str(guild.id))
+        canal     = buscar_canal(guild, 'kvk-anuncios') or buscar_canal(guild, 'kvk-chat')
+        if not temporada or not canal:
+            aviso = '⚠️ No encontré #kvk-anuncios; no se ha anunciado.' if temporada else '⚠️ No hay KvK activo.'
+        else:
+            embed = discord.Embed(
+                title=f'🎯 Objetivos del KvK / KvK goals — {temporada["nombre"]}',
+                description=(texto_objetivos(temporada) or '_Sin metas por ahora. / No goals for now._')[:4000],
+                color=COLOR_GUERRA,
+            )
+            embed.set_footer(text=f'Mira tu progreso en el tablero de #kvk-stats o con /kvk-buscar · {ALIANZA_TAG} · Reino {REINO}')
+            try:
+                await canal.send(embed=embed)
+                aviso = f'📢 Anunciado en {canal.mention}.'
+                anotar(guild, interaction.user, '🎯 Metas KvK', f'📢 anunció las metas en #{canal.name}')
+            except discord.HTTPException as e:
+                print(f'[guerra] No se pudieron anunciar las metas en {canal.name}: {e}')
+                aviso = f'⚠️ No he podido escribir en {canal.mention}.'
+        nuevo = MetasPanelView(temporada, aviso) if temporada else self
+        await interaction.response.edit_message(content=nuevo.contenido(), view=nuevo)
+
+    async def _cerrar(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content='✅ Panel de metas cerrado.', view=None)
+
+
+class GrupoModal(discord.ui.Modal):
+    """Un grupo de poder: desde qué poder entra, sus metas y sus objetivos. Vacío del todo = quitar el grupo."""
+
+    def __init__(self, panel: MetasPanelView, indice: int | None):
+        g = panel.grupos[indice] if indice is not None else None
+        super().__init__(title=f'{ICONOS_GRUPO[indice]} {nombre_grupo(panel.grupos, indice)}'[:45] if g
+                         else '➕ Nuevo grupo de poder')
+        self.panel, self.indice = panel, indice
+        self.primero = g is not None and g['desde'] == 0  # el de menos poder empieza siempre en 0
+
+        self.desde = None
+        if not self.primero:
+            self.desde = discord.ui.TextInput(placeholder='Ej: 60M', max_length=20, required=False,
+                                              default=fmt_poder(g['desde']) if g else None)
+            self.add_item(discord.ui.Label(text='Desde qué poder (al empezar el KvK)',
+                                           description='Entran los que tenían este poder o más', component=self.desde))
+        self.kp = discord.ui.TextInput(placeholder='Ej: 300M · vacío = sin meta', max_length=20, required=False,
+                                       default=fmt_poder(g['kp']) if g and g['kp'] else None)
+        self.aclamacion = discord.ui.TextInput(placeholder='Ej: 25K · vacío = sin meta', max_length=20, required=False,
+                                               default=fmt_poder(g['aclamacion']) if g and g['aclamacion'] else None)
         self.objetivos = discord.ui.TextInput(
-            placeholder='Ej: Tomar el paso 6 el viernes. Nadie se queda sin tropas en el hospital.',
-            style=discord.TextStyle.paragraph, max_length=800, required=False,
-            default=temporada['objetivos'] or None,
+            placeholder='Ej: Rally a los pasos y defender el santuario.', style=discord.TextStyle.paragraph,
+            max_length=MAX_OBJETIVOS, required=False, default=(g['objetivos'][:MAX_OBJETIVOS] or None) if g else None,
         )
-        self.anunciar = discord.ui.Select(options=[
-            discord.SelectOption(label='No, solo actualizar el panel', value='no', emoji='🔕', default=True),
-            discord.SelectOption(label='Sí, anunciarlo en kvk-anuncios', value='si', emoji='📢'),
-        ])
         self.add_item(discord.ui.Label(text='Meta de KP por jugador',
-                                       description='Se comprueba con los KP de todo el KvK de HeroScroll',
-                                       component=self.meta_kp))
-        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador',
-                                       description='Se comprueba con la aclamación de HeroScroll',
-                                       component=self.meta_aclamacion))
-        self.add_item(discord.ui.Label(text='Objetivos (opcional)', description='Lo que la alianza quiere conseguir',
-                                       component=self.objetivos))
-        self.add_item(discord.ui.Label(text='¿Avisar a la alianza?', component=self.anunciar))
+                                       description='KP de todo el KvK (HeroScroll)', component=self.kp))
+        self.add_item(discord.ui.Label(text='Meta de aclamación por jugador', component=self.aclamacion))
+        self.add_item(discord.ui.Label(text='Objetivos de este grupo (opcional)', component=self.objetivos))
 
     async def on_submit(self, interaction: discord.Interaction):
-        metas = {}
-        for nombre, campo in (('KP', self.meta_kp), ('aclamación', self.meta_aclamacion)):
-            texto = campo.value.strip()
-            valor = parse_poder(texto) if texto else 0
-            if valor < 0:
+        valores = {}
+        for nombre, campo in (('KP', self.kp), ('aclamación', self.aclamacion), ('poder', self.desde)):
+            texto = campo.value.strip() if campo else ''
+            valor = parse_poder(texto) if texto else None
+            if valor is not None and valor < 0:
                 await interaction.response.send_message(
-                    f'❌ Meta de {nombre} incorrecta. Usa `300M`, `25K` o `300000000` (o déjalo vacío).', ephemeral=True)
+                    f'❌ Valor de {nombre} incorrecto. Usa `300M`, `25K` o `300000000`.', ephemeral=True)
                 return
-            metas[nombre] = valor
+            valores[nombre] = valor
         objetivos = self.objetivos.value.strip()
+        desde     = 0 if self.primero else valores['poder']
+        grupos    = [dict(g) for g in self.panel.grupos]
+        vacio     = not valores['KP'] and not valores['aclamación'] and not objetivos and (self.primero or desde is None)
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if vacio:
+            if self.indice is None:
+                await interaction.response.edit_message(content=self.panel.contenido(), view=self.panel)
+                return
+            quitado = nombre_grupo(grupos, self.indice)
+            del grupos[self.indice]
+            aviso = f'🗑️ Grupo **{quitado}** quitado.'
+        else:
+            if desde is None:
+                await interaction.response.send_message(
+                    '❌ Pon **desde qué poder** empieza este grupo (ej: `60M`).', ephemeral=True)
+                return
+            if any(g['desde'] == desde for j, g in enumerate(grupos) if j != self.indice):
+                await interaction.response.send_message(
+                    f'❌ Ya hay un grupo que empieza en {fmt_poder(desde)}. Edita ese o usa otro poder.', ephemeral=True)
+                return
+            nuevo = {'desde': desde, 'kp': valores['KP'] or 0, 'aclamacion': valores['aclamación'] or 0,
+                     'objetivos': objetivos}
+            if self.indice is None:
+                grupos.append(nuevo)
+            else:
+                grupos[self.indice] = nuevo
+            aviso = '✅ Guardado. El panel, el tablero y el calendario ya lo muestran.'
+
+        # Siempre tiene que haber un grupo desde 0 para que nadie se quede sin grupo
+        if grupos and not any(g['desde'] == 0 for g in grupos):
+            grupos.append({'desde': 0, 'kp': 0, 'aclamacion': 0, 'objetivos': ''})
+            aviso += ' Añadido el grupo de menos poder (desde 0), sin metas: edítalo si hace falta.'
+        grupos.sort(key=lambda g: g['desde'])
+
         guild = interaction.guild
-        await db.kvk_set_metas(self.temporada_id, metas['KP'], metas['aclamación'], objetivos)
+        await db.kvk_set_grupos_metas(self.panel.temporada_id, json.dumps(grupos, ensure_ascii=False))
         temporada = await db.kvk_get_active(str(guild.id))
+        nuevo_panel = MetasPanelView(temporada, aviso)
+        self.panel.stop()
+        await interaction.response.edit_message(content=nuevo_panel.contenido(), view=nuevo_panel)
+
         await refrescar_panel(guild)
         from cogs.kvk import refrescar_calendario, refrescar_tablero_luego
         refrescar_calendario(guild)
-        refrescar_tablero_luego(guild)  # el "faltan" de cada jugador depende de las metas
-        anotar(guild, interaction.user, '🎯 Metas KvK',
-               f'KP {fmt_poder(metas["KP"]) if metas["KP"] else "—"} · '
-               f'aclamación {fmt_poder(metas["aclamación"]) if metas["aclamación"] else "—"}'
-               + (f' · objetivos: {objetivos}' if objetivos else ''))
-
-        respuesta = '✅ Metas guardadas. El panel, el tablero y el calendario ya las muestran.'
-        if self.anunciar.values and self.anunciar.values[0] == 'si' and temporada:
-            canal = buscar_canal(guild, 'kvk-anuncios') or buscar_canal(guild, 'kvk-chat')
-            embed = discord.Embed(
-                title=f'🎯 Objetivos del KvK / KvK goals — {temporada["nombre"]}',
-                description=texto_objetivos(temporada) or '_Sin metas por ahora. / No goals for now._',
-                color=COLOR_GUERRA,
-            )
-            embed.set_footer(text=f'Los KP de las guerras se cuentan solos con ROKSTATS · {ALIANZA_TAG} · Reino {REINO}')
-            if not canal:
-                respuesta += '\n⚠️ No encontré #kvk-anuncios; no se ha anunciado.'
-            else:
-                try:
-                    await canal.send(embed=embed)
-                    respuesta += f'\n📢 Anunciado en {canal.mention}.'
-                except discord.HTTPException as e:
-                    print(f'[guerra] No se pudieron anunciar las metas en {canal.name}: {e}')
-                    respuesta += f'\n⚠️ No he podido escribir en {canal.mention}.'
-        await interaction.followup.send(respuesta, ephemeral=True)
+        refrescar_tablero_luego(guild)  # el "faltan" de cada jugador depende de las metas de su grupo
+        anotar(guild, interaction.user, '🎯 Metas KvK', f'{aviso.split(".")[0]} · ' + ' | '.join(
+            f'{nombre_grupo(grupos, i)}: KP {fmt_poder(g["kp"]) if g["kp"] else "—"}, '
+            f'aclamación {fmt_poder(g["aclamacion"]) if g["aclamacion"] else "—"}' for i, g in enumerate(grupos)))
 
 
 # ── Cambios de estado ──────────────────────────────────────────────────────────

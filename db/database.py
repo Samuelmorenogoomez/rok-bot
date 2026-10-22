@@ -58,7 +58,8 @@ async def init_db():
                 guerra_activa INTEGER DEFAULT 0,
                 meta_kp         INTEGER DEFAULT 0,
                 meta_aclamacion INTEGER DEFAULT 0,
-                objetivos       TEXT    DEFAULT ''
+                objetivos       TEXT    DEFAULT '',
+                grupos_metas    TEXT    DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS kvk_baseline_guerra (
@@ -165,6 +166,7 @@ async def init_db():
                 dkp           INTEGER DEFAULT 0,
                 aclamacion    INTEGER DEFAULT 0,
                 poder_delta   INTEGER DEFAULT 0,
+                poder_inicio  INTEGER DEFAULT 0,
                 imported_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (temporada_id, governor_id)
             );
@@ -274,14 +276,15 @@ async def init_db():
             'meta_kp INTEGER DEFAULT 0',
             'meta_aclamacion INTEGER DEFAULT 0',
             'objetivos TEXT DEFAULT \'\'',
+            'grupos_metas TEXT DEFAULT \'\'',
         ):
             try:
                 await db.execute(f'ALTER TABLE kvk_temporadas ADD COLUMN {columna}')
                 await db.commit()
             except Exception:
                 pass
-        # Migración: aclamación y poder ganado/perdido de HeroScroll en kvk_import (metas y tablero del KvK)
-        for columna in ('aclamacion INTEGER DEFAULT 0', 'poder_delta INTEGER DEFAULT 0'):
+        # Migración: aclamación, poder ganado/perdido y poder al empezar el KvK de HeroScroll en kvk_import
+        for columna in ('aclamacion INTEGER DEFAULT 0', 'poder_delta INTEGER DEFAULT 0', 'poder_inicio INTEGER DEFAULT 0'):
             try:
                 await db.execute(f'ALTER TABLE kvk_import ADD COLUMN {columna}')
                 await db.commit()
@@ -467,13 +470,13 @@ async def kvk_get_active(guild_id: str):
         return await cursor.fetchone()
 
 
-async def kvk_set_metas(temporada_id: int, meta_kp: int, meta_aclamacion: int, objetivos: str):
-    """Metas por jugador (0 = sin meta) y objetivos del KvK; se pueden cambiar con la temporada en curso."""
+async def kvk_set_grupos_metas(temporada_id: int, grupos_json: str):
+    """Grupos de metas por poder al empezar el KvK (JSON); se pueden cambiar con la temporada en curso.
+
+    Sustituye a meta_kp/meta_aclamacion/objetivos, que se quedan como estaban por si se vuelve atrás.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            'UPDATE kvk_temporadas SET meta_kp=?, meta_aclamacion=?, objetivos=? WHERE id=?',
-            (meta_kp, meta_aclamacion, objetivos, temporada_id)
-        )
+        await db.execute('UPDATE kvk_temporadas SET grupos_metas=? WHERE id=?', (grupos_json, temporada_id))
         await db.commit()
 
 
@@ -631,8 +634,8 @@ async def kvk_insert_import(temporada_id: int, rows: list):
         await db.executemany('''
             INSERT INTO kvk_import
                 (temporada_id, governor_id, governor_name, kills_t4, kills_t5, kill_points, muertes, dkp, aclamacion,
-                 poder_delta)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+                 poder_delta, poder_inicio)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(temporada_id, governor_id) DO UPDATE SET
                 governor_name = excluded.governor_name,
                 kills_t4      = excluded.kills_t4,
@@ -642,6 +645,7 @@ async def kvk_insert_import(temporada_id: int, rows: list):
                 dkp           = excluded.dkp,
                 aclamacion    = excluded.aclamacion,
                 poder_delta   = excluded.poder_delta,
+                poder_inicio  = excluded.poder_inicio,
                 imported_at   = CURRENT_TIMESTAMP
         ''', rows)
         await db.commit()
