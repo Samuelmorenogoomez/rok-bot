@@ -141,7 +141,7 @@ def leer_heroscroll(html: str) -> list[dict]:
             gobernadores = valor
             break
     if not gobernadores:
-        raise ValueError('no encuentro los gobernadores en la página (puede que HeroScroll haya cambiado su web)')
+        raise ValueError('no encuentro los gobernadores en la página (puede que la web de stats haya cambiado)')
 
     jugadores = []
     for g in gobernadores.values():
@@ -175,7 +175,7 @@ async def descargar_heroscroll(enlace: str) -> list[dict]:
     async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent': 'Mozilla/5.0 (rok-bot)'}) as sesion:
         async with sesion.get(enlace) as resp:
             if resp.status != 200:
-                raise ValueError(f'HeroScroll ha respondido con el error {resp.status}')
+                raise ValueError(f'la web de stats ha respondido con el error {resp.status}')
             html = await resp.text()
     # La página pesa varios MB: se procesa fuera del bucle para no congelar el bot
     return await asyncio.to_thread(leer_heroscroll, html)
@@ -261,7 +261,7 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
         cabecera.append('_El animal junto a cada nombre es su grupo. / The animal next to each name is their group._')
     ts = await db.get_config(gid, 'kvk_datos_ts')
     if ts:
-        cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · HeroScroll · Reino {REINO}')
+        cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · Reino {REINO}')
 
     ordenados = sorted(stats, key=orden_aclamacion, reverse=True)
     lineas    = cabecera + [''] + [linea_tablero(pos, s, grupos) for pos, s in enumerate(ordenados, 1)]
@@ -592,8 +592,8 @@ class Kvk(commands.Cog):
         if canal:
             await canal.send(embed=build_recap_embed(temporada, stats, guerra, interaction.guild))
 
-    @app_commands.command(name='kvk-importar', description='[ADMIN] Importa estadísticas KvK desde el Excel de heroscroll.com')
-    @app_commands.describe(archivo='Archivo .xlsx exportado de heroscroll.com/rok/kvk-dashboard')
+    @app_commands.command(name='kvk-importar', description='[ADMIN] Importa estadísticas KvK desde el Excel de stats del KvK')
+    @app_commands.describe(archivo='Archivo .xlsx con las stats del KvK')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def kvk_importar(self, interaction: discord.Interaction, archivo: discord.Attachment):
         if not archivo.filename.endswith('.xlsx'):
@@ -625,8 +625,8 @@ class Kvk(commands.Cog):
         await refrescar_tablero(interaction.guild)
 
     @app_commands.command(name='kvk-actualizar',
-                          description=f'[ADMIN] Carga las stats del reino {REINO} desde el enlace de HeroScroll (luego se actualiza solo)')
-    @app_commands.describe(enlace='Enlace heroscroll.com/rok/kvk-dashboard?id=… (solo la primera vez o para cambiarlo)')
+                          description=f'[ADMIN] Carga las stats del reino {REINO} desde el enlace del KvK (luego se actualiza solo)')
+    @app_commands.describe(enlace='Enlace del dashboard del KvK en la web de stats (solo la primera vez o para cambiarlo)')
     @app_commands.checks.has_permissions(manage_guild=True)
     async def kvk_actualizar(self, interaction: discord.Interaction, enlace: str = None):
         gid       = str(interaction.guild_id)
@@ -639,14 +639,14 @@ class Kvk(commands.Cog):
             enlace = enlace.strip()
             if not ENLACE_HEROSCROLL.match(enlace):
                 await interaction.response.send_message(
-                    '❌ El enlace tiene que ser como `https://www.heroscroll.com/rok/kvk-dashboard?id=C13345`.',
+                    '❌ Ese enlace no vale: tiene que ser el del dashboard del KvK de la web de stats.',
                     ephemeral=True)
                 return
         else:
             enlace = await enlace_heroscroll(gid, temporada['id'])
             if not enlace:
                 await interaction.response.send_message(
-                    '❌ Aún no tengo el enlace de este KvK. Pásamelo: `/kvk-actualizar enlace:https://www.heroscroll.com/…`',
+                    '❌ Aún no tengo el enlace de este KvK. Pásamelo: `/kvk-actualizar enlace:…`',
                     ephemeral=True)
                 return
 
@@ -654,12 +654,12 @@ class Kvk(commands.Cog):
         try:
             jugadores = await descargar_heroscroll(enlace)
         except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-            await interaction.followup.send(f'❌ No he podido leer HeroScroll: {str(e) or "no responde"}.', ephemeral=True)
+            await interaction.followup.send(f'❌ No he podido leer las stats: {str(e) or "no responde"}.', ephemeral=True)
             return
 
         await db.set_config(gid, 'heroscroll_url', f'{temporada["id"]}|{enlace}')
         await guardar_importados(gid, temporada['id'], jugadores)
-        embed = embed_importados(temporada, jugadores, f'[HeroScroll]({enlace}) · solo el reino {REINO}')
+        embed = embed_importados(temporada, jugadores, f'las stats del reino {REINO}')
         embed.set_footer(text=f'Se actualiza solo cada {HORAS_AUTO} h mientras dure el KvK · '
                               'el tablero fijo de #kvk-stats también se actualiza')
         await interaction.followup.send(embed=embed)
@@ -678,11 +678,11 @@ class Kvk(commands.Cog):
                     continue
                 jugadores = await descargar_heroscroll(enlace)
                 await guardar_importados(gid, temporada['id'], jugadores)
-                print(f'[kvk] HeroScroll: {len(jugadores)} gobernadores del {REINO} actualizados en {guild.name}')
+                print(f'[kvk] Stats: {len(jugadores)} gobernadores del {REINO} actualizados en {guild.name}')
                 await refrescar_tablero(guild)
             except Exception as e:
                 # Si HeroScroll falla se conservan los datos anteriores y se reintenta en la siguiente vuelta
-                print(f'[kvk] No se pudo actualizar desde HeroScroll en {guild.name}: {type(e).__name__}: {e}')
+                print(f'[kvk] No se pudieron actualizar las stats en {guild.name}: {type(e).__name__}: {e}')
 
     @auto_heroscroll.before_loop
     async def antes_auto_heroscroll(self):
@@ -699,7 +699,7 @@ class Kvk(commands.Cog):
 
         # Usar datos importados si existen, si no los manuales
         stats = await db.kvk_get_import_ranking(temporada['id'])
-        fuente = '📊 heroscroll.com'
+        fuente = '📊 Stats del reino'
 
         if not stats:
             stats  = await db.kvk_get_ranking(temporada['id'])
@@ -707,7 +707,7 @@ class Kvk(commands.Cog):
 
         if not stats:
             await interaction.response.send_message(
-                '❌ Sin datos. Usa `/kvk-importar` con el Excel de heroscroll.com.',
+                '❌ Sin datos. Cárgalos con `/kvk-actualizar` o `/kvk-importar`.',
                 ephemeral=True,
             )
             return

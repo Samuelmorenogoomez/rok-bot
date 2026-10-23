@@ -118,7 +118,6 @@ async def msg_comandos_bot(canal: discord.TextChannel):
     embed.add_field(
         name='⚔️ Canal de KvK / KvK Channel',
         value=(
-            '`/kvk-importar` — Importa Excel de heroscroll.com / _Import Excel from heroscroll.com_\n'
             '`/kvk-ranking` — Ranking de la temporada / _Season ranking_\n'
             '`/kvk-buscar [nombre]` — Stats de un gobernador / _Governor stats_'
         ),
@@ -199,9 +198,8 @@ async def msg_kvk(canal: discord.TextChannel):
         title='⚔️ KvK — Kingdom vs Kingdom',
         description=(
             f'*{ALIANZA_TAG} · Reino {REINO}*\n\n'
-            'Canal de estadísticas del KvK. Las stats se importan desde el Excel de '
-            '[heroscroll.com](https://heroscroll.com/rok/kvk-dashboard).\n'
-            '_KvK statistics channel. Stats are imported from the heroscroll.com Excel file._'
+            'Canal de estadísticas del KvK del reino.\n'
+            '_Kingdom KvK statistics channel._'
         ),
         color=0xFF4444,
     )
@@ -216,10 +214,10 @@ async def msg_kvk(canal: discord.TextChannel):
     embed.add_field(
         name='📊 ¿Cómo se actualizan las stats? / How are stats updated?',
         value=(
-            'El bot las lee solo de heroscroll.com cada 6 horas (el liderazgo pone el enlace del KvK con '
-            '`/kvk-actualizar`). También se puede subir el Excel con `/kvk-importar`.\n'
-            '_The bot reads them from heroscroll.com every 6 hours (leadership sets the KvK link with '
-            '`/kvk-actualizar`). The Excel can also be uploaded with `/kvk-importar`._'
+            'El bot las actualiza solo cada 6 horas; el liderazgo puede forzarlo con 🔄 **Actualizar** '
+            'en el panel del KvK.\n'
+            '_The bot updates them every 6 hours; leadership can force it with 🔄 **Actualizar** '
+            'on the KvK panel._'
         ),
         inline=False,
     )

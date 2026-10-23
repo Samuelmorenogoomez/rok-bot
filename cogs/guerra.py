@@ -400,12 +400,12 @@ COMO_FUNCIONA_CSV = (
 
 # Cómo funciona ahora: stats de HeroScroll, grupos por poder y la aclamación como lo principal
 COMO_FUNCIONA_HEROSCROLL = (
-    '1️⃣ El bot lee las stats del reino de **HeroScroll** cada 6 h (un R4 puede forzarlo con 🔄 **Actualizar**).\n'
+    '1️⃣ El bot actualiza solo las stats del reino cada 6 h (un R4 puede forzarlo con 🔄 **Actualizar**).\n'
     '2️⃣ Cada uno está en un grupo (🐙 Kraken, 🐋 Ballenas, 🦈 Tiburones…) según su **poder al empezar el KvK**, '
     'con sus metas y objetivos.\n'
     '3️⃣ Lo que más cuenta es la **🏅 aclamación**. Mira tu progreso en el **tablero** de este canal o con '
     '`/kvk-buscar`. ¡No tenéis que subir nada!\n'
-    '_1️⃣ The bot reads the kingdom stats from HeroScroll every 6 h. 2️⃣ Your group (Kraken, Whales, Sharks…) '
+    '_1️⃣ The bot updates the kingdom stats every 6 h. 2️⃣ Your group (Kraken, Whales, Sharks…) '
     'depends on your power when the KvK started, each with its own goals. 3️⃣ **Acclaim** matters most: check the '
     'board in this channel or `/kvk-buscar`. You don\'t need to upload anything!_'
 )
@@ -423,7 +423,7 @@ async def contenido_panel(guild: discord.Guild):
     if not guerra and ACTIVAR_GUERRA_DESHABILITADO:
         color = COLOR_ACTIVA if temporada else COLOR_INACTIVA
         ts    = await db.get_config(gid, 'kvk_datos_ts')
-        texto = ('📊 **Stats del KvK desde HeroScroll** / _KvK stats from HeroScroll_'
+        texto = ('📊 **Stats del KvK del reino** / _Kingdom KvK stats_'
                  + (f'\n🕐 Última actualización / _Last update_: <t:{ts}:R>' if ts else
                     '\n_Aún sin datos: un R4 los carga con `/kvk-actualizar`._'))
     elif not guerra:
@@ -443,7 +443,7 @@ async def contenido_panel(guild: discord.Guild):
     if temporada:
         grupos  = grupos_metas(temporada)
         cumplen = lineas_cumplen(temporada, await db.kvk_get_import_ranking(temporada['id']))
-        nota    = '_Datos de HeroScroll · mira tu progreso con `/kvk-buscar`_'
+        nota    = '_Mira tu progreso con `/kvk-buscar` / Check your progress with `/kvk-buscar`_'
         if len(grupos) <= 1:
             valor = texto_objetivos(temporada) or '_El liderazgo aún no ha fijado metas. / No goals set yet._'
             if cumplen:
@@ -526,7 +526,7 @@ class PanelGuerraView(discord.ui.View):
         if ACTIVAR_GUERRA_DESHABILITADO:
             # Por si queda algún panel antiguo con el botón aún activo
             await interaction.response.send_message(
-                '⏸️ Activar la guerra con el CSV está desactivado de momento: las stats del KvK salen de HeroScroll '
+                '⏸️ Activar la guerra con el CSV está desactivado de momento: las stats del KvK se actualizan solas '
                 '(`/kvk-actualizar`).', ephemeral=True)
             return
         if not await self._solo_r4(interaction):
@@ -609,8 +609,8 @@ class PanelGuerraView(discord.ui.View):
         enlace    = await enlace_heroscroll(gid, temporada['id']) if temporada else None
         if not enlace:
             await interaction.response.send_message(
-                '❌ Aún no tengo el enlace de HeroScroll de este KvK. Ponlo una vez con '
-                '`/kvk-actualizar enlace:https://www.heroscroll.com/…` y luego ya vale este botón.', ephemeral=True)
+                '❌ Aún no tengo el enlace de las stats de este KvK. Ponlo una vez con '
+                '`/kvk-actualizar enlace:…` y luego ya vale este botón.', ephemeral=True)
             return
         espera = ESPERA_ACTUALIZAR - (time.time() - _ultima_actualizacion.get(interaction.guild_id, 0))
         if espera > 0:
@@ -623,13 +623,13 @@ class PanelGuerraView(discord.ui.View):
         try:
             jugadores = await descargar_heroscroll(enlace)
         except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-            await interaction.followup.send(f'❌ No he podido leer HeroScroll: {str(e) or "no responde"}.', ephemeral=True)
+            await interaction.followup.send(f'❌ No he podido leer las stats: {str(e) or "no responde"}.', ephemeral=True)
             return
         await guardar_importados(gid, temporada['id'], jugadores)
-        embed = embed_importados(temporada, jugadores, f'[HeroScroll]({enlace}) · solo el reino {REINO}')
+        embed = embed_importados(temporada, jugadores, f'las stats del reino {REINO}')
         embed.set_footer(text='El tablero y el panel ya están actualizados · también se actualiza solo cada 6 h')
         await interaction.followup.send(embed=embed, ephemeral=True)
-        anotar(interaction.guild, interaction.user, '🔄 KvK', f'actualizó los datos de HeroScroll ({len(jugadores)} gobernadores)')
+        anotar(interaction.guild, interaction.user, '🔄 KvK', f'actualizó las stats del KvK ({len(jugadores)} gobernadores)')
         await refrescar_tablero(interaction.guild)
         await refrescar_panel(interaction.guild)  # el "cuántos cumplen" del panel también cambia
 
@@ -727,7 +727,7 @@ class MetasPanelView(discord.ui.View):
             texto += (f'{icono_grupo(self.grupos, i)} **{animal_grupo(self.grupos, i)}** '
                       f'({nombre_grupo(self.grupos, i)}) — {metas or "sin metas"}'
                       + (' · 📋' if g['objetivos'] else '') + '\n')
-        texto += ('_El grupo de cada jugador sale de su **poder al empezar el KvK** (HeroScroll). '
+        texto += ('_El grupo de cada jugador sale de su **poder al empezar el KvK**. '
                   'El de más poder es el 🐙 Kraken, luego 🐋 Ballenas, 🦈 Tiburones… '
                   'Con un solo grupo, las metas son para todos. Para quitar un grupo, vacía todos sus campos._')
         if self.aviso:
@@ -795,7 +795,7 @@ class GrupoModal(discord.ui.Modal):
                                        description='Lo que más cuenta: el tablero va ordenado por ella',
                                        component=self.aclamacion))
         self.add_item(discord.ui.Label(text='Meta de KP por jugador',
-                                       description='KP de todo el KvK (HeroScroll)', component=self.kp))
+                                       description='KP de todo el KvK', component=self.kp))
         self.add_item(discord.ui.Label(text='Objetivos de este grupo (opcional)', component=self.objetivos))
         self.nombre = discord.ui.TextInput(
             placeholder='Vacío = su animal (Kraken, Ballenas, Tiburones…)', max_length=MAX_NOMBRE, required=False,
