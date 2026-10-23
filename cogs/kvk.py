@@ -203,7 +203,9 @@ async def guardar_importados(guild_id: str, temporada_id: int, jugadores: list[d
 
 # ── Tablero fijo de #kvk-stats ─────────────────────────────────────────────────
 
-MAX_DESCRIPCION = 3900  # Discord admite 4096 por embed; se deja margen
+# Discord dice admitir 4096 por embed, pero en la práctica el tablero se veía cortado a ~2048 (se saltaba a gente):
+# trozos pequeños y varios por mensaje
+MAX_DESCRIPCION = 1900
 _lock_tablero   = asyncio.Lock()
 
 
@@ -262,13 +264,13 @@ async def contenido_tablero(guild: discord.Guild) -> list[list[discord.Embed]]:
         cabecera.append(f'🕐 Actualizado / _Updated_ <t:{ts}:R> · HeroScroll · Reino {REINO}')
 
     ordenados = sorted(stats, key=orden_aclamacion, reverse=True)
-    bloques, actual = [], '\n'.join(cabecera) + '\n\n'
-    for pos, s in enumerate(ordenados, 1):
-        linea = linea_tablero(pos, s, grupos)
-        if len(actual) + len(linea) + 1 > MAX_DESCRIPCION:
+    lineas    = cabecera + [''] + [linea_tablero(pos, s, grupos) for pos, s in enumerate(ordenados, 1)]
+    bloques, actual = [], ''
+    for linea in lineas:
+        if actual and len(actual) + len(linea) + 1 > MAX_DESCRIPCION:
             bloques.append(actual)
             actual = ''
-        actual += linea + '\n'
+        actual += linea[:MAX_DESCRIPCION - 1] + '\n'
     bloques.append(actual)
 
     embeds = []

@@ -48,8 +48,20 @@ def buscar_canal(guild: discord.Guild, nombre: str):
     return exacto or next((c for c in guild.text_channels if nombre in c.name), None)
 
 
+MAX_DESCRIPCION_SEGURA = 1900  # Discord admite 4096, pero se ha visto cortar a ~2048: mejor no pasar de aquí
+
+
 def embeds_lista(titulo: str, lineas: list[str], color: int, por_embed: int = 30) -> list[discord.Embed]:
-    bloques = [lineas[i:i + por_embed] for i in range(0, len(lineas), por_embed)] or [[]]
+    """Reparte las líneas en embeds de como mucho `por_embed` líneas y MAX_DESCRIPCION_SEGURA caracteres."""
+    bloques, actual, largo = [], [], 0
+    for linea in lineas:
+        if actual and (len(actual) == por_embed or largo + len(linea) + 1 > MAX_DESCRIPCION_SEGURA):
+            bloques.append(actual)
+            actual, largo = [], 0
+        actual.append(linea)
+        largo += len(linea) + 1
+    if actual or not bloques:
+        bloques.append(actual)
     embeds = []
     for n, bloque in enumerate(bloques, 1):
         t = titulo if len(bloques) == 1 else f'{titulo} ({n}/{len(bloques)})'
