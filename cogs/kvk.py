@@ -116,9 +116,21 @@ def leer_heroscroll(html: str) -> list[dict]:
     self.__next_f.push([1, "…JSON escapado…"]) de Next.js. Se usan los deltas (lo hecho en el KvK),
     igual que la sección Deltas del Excel.
     """
-    trozos  = re.findall(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)', html)
-    payload = ''.join(json.loads(t) for t in trozos)
+    # Cada trozo se decodifica directamente desde su comilla de apertura. Antes se recortaban con una expresión
+    # regular sobre los varios MB de la página y se iba a ~600 MB de memoria (en Railway mataba al bot).
     decoder = json.JSONDecoder()
+    marca   = 'self.__next_f.push([1,'
+    trozos, desde = [], 0
+    while (i := html.find(marca, desde)) >= 0:
+        desde = i + len(marca)
+        try:
+            texto, desde = decoder.raw_decode(html, desde)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(texto, str):
+            trozos.append(texto)
+    payload = ''.join(trozos)
+    del trozos
     gobernadores = None
     for m in re.finditer(r'"governors":', payload):
         try:
