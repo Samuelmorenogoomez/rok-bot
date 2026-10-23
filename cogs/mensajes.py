@@ -224,12 +224,12 @@ async def msg_kvk(canal: discord.TextChannel):
         inline=False,
     )
     embed.add_field(
-        name='⚔️ Bajas en guerra / War kills',
+        name='🎯 Metas y tablero / Goals and board',
         value=(
-            'Las bajas de cada guerra se cuentan con el CSV de ROKSTATS que sube un R4 al empezar y al terminar: '
-            'mira el **panel de guerra** de abajo.\n'
-            '_War kills are counted with the ROKSTATS CSV an R4 uploads at the start and at the end: '
-            'see the **war panel** below._'
+            'Abajo tienes el **panel del KvK** con las metas de cada grupo (🐙 Kraken, 🐋 Ballenas…) y el '
+            '**tablero** con lo que lleva cada uno y lo que le falta. Lo que más cuenta es la **🏅 aclamación**.\n'
+            '_Below are the **KvK panel** with each group\'s goals and the **board** with everyone\'s progress. '
+            '**Acclaim** matters most._'
         ),
         inline=False,
     )

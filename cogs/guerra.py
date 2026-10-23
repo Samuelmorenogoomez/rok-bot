@@ -4,6 +4,7 @@ Un R4 activa la guerra subiendo el CSV de la alianza (foto inicial de los Kill P
 Un R4 termina la guerra subiendo el CSV nuevo (foto final) → el bot publica la clasificación:
 KP final − KP inicial de cada gobernador. Los jugadores no tienen que hacer nada.
 """
+import asyncio
 import csv
 import io
 import json
@@ -12,6 +13,7 @@ import time
 import unicodedata
 from datetime import datetime
 
+import aiohttp
 import discord
 from discord.ext import commands
 
@@ -29,6 +31,13 @@ COLOR_GUERRA   = 0xE74C3C
 
 MEDALLAS = ['🥇', '🥈', '🥉']
 DONDE_CSV = 'ROKSTATS → tu alianza → pestaña Analytics → exportar CSV'
+
+# De momento el KvK se sigue con HeroScroll (/kvk-actualizar), no con guerras por CSV: el botón 🟢 se ve pero
+# desactivado. Para volver a usarlo basta con poner False (todo el código de las guerras sigue aquí).
+ACTIVAR_GUERRA_DESHABILITADO = True
+
+ESPERA_ACTUALIZAR = 120  # segundos entre dos pulsaciones de 🔄 Actualizar, para no saturar HeroScroll
+_ultima_actualizacion: dict[int, float] = {}
 
 
 # ── Utilidades ─────────────────────────────────────────────────────────────────
@@ -379,7 +388,8 @@ def txt_exportado(nombre_archivo: str) -> str:
 
 # ── Panel fijo (#kvk-stats) ────────────────────────────────────────────────────
 
-COMO_FUNCIONA = (
+# Cómo funciona el sistema de guerras con CSV (se usa cuando ACTIVAR_GUERRA_DESHABILITADO es False)
+COMO_FUNCIONA_CSV = (
     f'1️⃣ Un R4 activa la guerra subiendo el CSV de la alianza ({DONDE_CSV}).\n'
     '2️⃣ Al terminar, un R4 sube el CSV nuevo.\n'
     '3️⃣ El bot publica la clasificación: **KP hechos entre los dos CSV**. ¡No tenéis que hacer nada!\n'
@@ -388,13 +398,35 @@ COMO_FUNCIONA = (
     '3️⃣ The bot posts the ranking: **KP made between both CSVs**. You don\'t need to do anything!_'
 )
 
+# Cómo funciona ahora: stats de HeroScroll, grupos por poder y la aclamación como lo principal
+COMO_FUNCIONA_HEROSCROLL = (
+    '1️⃣ El bot lee las stats del reino de **HeroScroll** cada 6 h (un R4 puede forzarlo con 🔄 **Actualizar**).\n'
+    '2️⃣ Cada uno está en un grupo (🐙 Kraken, 🐋 Ballenas, 🦈 Tiburones…) según su **poder al empezar el KvK**, '
+    'con sus metas y objetivos.\n'
+    '3️⃣ Lo que más cuenta es la **🏅 aclamación**. Mira tu progreso en el **tablero** de este canal o con '
+    '`/kvk-buscar`. ¡No tenéis que subir nada!\n'
+    '_1️⃣ The bot reads the kingdom stats from HeroScroll every 6 h. 2️⃣ Your group (Kraken, Whales, Sharks…) '
+    'depends on your power when the KvK started, each with its own goals. 3️⃣ **Acclaim** matters most: check the '
+    'board in this channel or `/kvk-buscar`. You don\'t need to upload anything!_'
+)
+
+
+def como_funciona() -> str:
+    return COMO_FUNCIONA_HEROSCROLL if ACTIVAR_GUERRA_DESHABILITADO else COMO_FUNCIONA_CSV
+
 
 async def contenido_panel(guild: discord.Guild):
     gid       = str(guild.id)
     guerra    = await db.guerra_get_abierta(gid)
     temporada = await db.kvk_get_active(gid)
 
-    if not guerra:
+    if not guerra and ACTIVAR_GUERRA_DESHABILITADO:
+        color = COLOR_ACTIVA if temporada else COLOR_INACTIVA
+        ts    = await db.get_config(gid, 'kvk_datos_ts')
+        texto = ('📊 **Stats del KvK desde HeroScroll** / _KvK stats from HeroScroll_'
+                 + (f'\n🕐 Última actualización / _Last update_: <t:{ts}:R>' if ts else
+                    '\n_Aún sin datos: un R4 los carga con `/kvk-actualizar`._'))
+    elif not guerra:
         color = COLOR_INACTIVA
         texto = ('🔴 **Sin guerra activa.** / _No active war._')
     else:
@@ -405,7 +437,9 @@ async def contenido_panel(guild: discord.Guild):
                  f'_War #{num} in progress._\n\n'
                  f'📄 CSV inicial: **{n}** gobernadores · exportado {txt_exportado(guerra["csv_inicial"])}')
 
-    embed = discord.Embed(title='⚔️ Modo guerra · Kill Points / War mode', description=texto, color=color)
+    titulo = ('⚔️ KvK · Metas y stats / KvK goals & stats' if ACTIVAR_GUERRA_DESHABILITADO
+              else '⚔️ Modo guerra · Kill Points / War mode')
+    embed = discord.Embed(title=titulo, description=texto, color=color)
     if temporada:
         grupos  = grupos_metas(temporada)
         cumplen = lineas_cumplen(temporada, await db.kvk_get_import_ranking(temporada['id']))
@@ -422,7 +456,7 @@ async def contenido_panel(guild: discord.Guild):
             if cumplen:
                 embed.add_field(name='✅ Quién las cumple / Who meets them',
                                 value=('\n'.join(cumplen) + '\n' + nota)[:1024], inline=False)
-    embed.add_field(name='❓ Cómo funciona / How it works', value=COMO_FUNCIONA, inline=False)
+    embed.add_field(name='❓ Cómo funciona / How it works', value=como_funciona(), inline=False)
     pie = f'Temporada: {temporada["nombre"]}' if temporada else 'Sin temporada KvK activa'
     embed.set_footer(text=f'{pie} · {ALIANZA_TAG} · Reino {REINO}')
     return embed, PanelGuerraView('activa' if guerra else None)
@@ -464,8 +498,8 @@ class PanelGuerraView(discord.ui.View):
     """Botones del panel. Con estado='todos' se registra la vista persistente con todos los botones."""
 
     VISIBLES = {
-        None:     {'activar', 'ranking', 'metas'},
-        'activa': {'terminar', 'cancelar', 'ranking', 'metas'},
+        None:     {'activar', 'ranking', 'metas', 'actualizar'},
+        'activa': {'terminar', 'cancelar', 'ranking', 'metas', 'actualizar'},
     }
 
     def __init__(self, estado='todos'):
@@ -475,6 +509,9 @@ class PanelGuerraView(discord.ui.View):
         for item in list(self.children):
             if item.custom_id.split(':')[1] not in self.VISIBLES[estado]:
                 self.remove_item(item)
+        if ACTIVAR_GUERRA_DESHABILITADO:
+            self.activar.disabled = True
+            self.activar.label    = 'Activar guerra (desactivado)'
 
     @staticmethod
     async def _solo_r4(interaction: discord.Interaction) -> bool:
@@ -486,6 +523,12 @@ class PanelGuerraView(discord.ui.View):
     @discord.ui.button(label='Activar guerra / Start war', emoji='🟢', style=discord.ButtonStyle.success,
                        custom_id='guerra:activar')
     async def activar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if ACTIVAR_GUERRA_DESHABILITADO:
+            # Por si queda algún panel antiguo con el botón aún activo
+            await interaction.response.send_message(
+                '⏸️ Activar la guerra con el CSV está desactivado de momento: las stats del KvK salen de HeroScroll '
+                '(`/kvk-actualizar`).', ephemeral=True)
+            return
         if not await self._solo_r4(interaction):
             return
         gid = str(interaction.guild_id)
@@ -553,6 +596,42 @@ class PanelGuerraView(discord.ui.View):
             return
         panel = MetasPanelView(temporada)
         await interaction.response.send_message(panel.contenido(), view=panel, ephemeral=True)
+
+    @discord.ui.button(label='Actualizar', emoji='🔄', style=discord.ButtonStyle.secondary, custom_id='guerra:actualizar')
+    async def actualizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Lo mismo que /kvk-actualizar sin enlace: vuelve a leer HeroScroll y repinta el tablero y el panel."""
+        if not await self._solo_r4(interaction):
+            return
+        from cogs.kvk import (descargar_heroscroll, enlace_heroscroll, guardar_importados, embed_importados,
+                              refrescar_tablero)
+        gid       = str(interaction.guild_id)
+        temporada = await db.kvk_get_active(gid)
+        enlace    = await enlace_heroscroll(gid, temporada['id']) if temporada else None
+        if not enlace:
+            await interaction.response.send_message(
+                '❌ Aún no tengo el enlace de HeroScroll de este KvK. Ponlo una vez con '
+                '`/kvk-actualizar enlace:https://www.heroscroll.com/…` y luego ya vale este botón.', ephemeral=True)
+            return
+        espera = ESPERA_ACTUALIZAR - (time.time() - _ultima_actualizacion.get(interaction.guild_id, 0))
+        if espera > 0:
+            await interaction.response.send_message(
+                f'⏳ Se acaba de actualizar. Prueba otra vez en {int(espera) + 1} s.', ephemeral=True)
+            return
+        _ultima_actualizacion[interaction.guild_id] = time.time()
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            jugadores = await descargar_heroscroll(enlace)
+        except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+            await interaction.followup.send(f'❌ No he podido leer HeroScroll: {str(e) or "no responde"}.', ephemeral=True)
+            return
+        await guardar_importados(gid, temporada['id'], jugadores)
+        embed = embed_importados(temporada, jugadores, f'[HeroScroll]({enlace}) · solo el reino {REINO}')
+        embed.set_footer(text='El tablero y el panel ya están actualizados · también se actualiza solo cada 6 h')
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        anotar(interaction.guild, interaction.user, '🔄 KvK', f'actualizó los datos de HeroScroll ({len(jugadores)} gobernadores)')
+        await refrescar_tablero(interaction.guild)
+        await refrescar_panel(interaction.guild)  # el "cuántos cumplen" del panel también cambia
 
 
 class AnularView(discord.ui.View):
