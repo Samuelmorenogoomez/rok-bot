@@ -83,6 +83,11 @@ ANIMALES = [('🐙', 'Kraken'), ('🐋', 'Ballenas'), ('🦈', 'Tiburones'), ('�
             ('🦑', 'Calamares'), ('🐡', 'Peces globo'), ('🦀', 'Cangrejos'), ('🦐', 'Gambas')]
 
 
+def poder_en_millones(poder: int) -> int:
+    """En RoK nadie tiene menos de un millón de poder: un corte como 100 o 60 quiere decir 100M o 60M."""
+    return poder * 1_000_000 if 0 < poder < 1_000_000 else poder
+
+
 def grupos_metas(temporada) -> list[dict]:
     """[{desde, kp, aclamacion, objetivos, nombre?}] ordenados de menos a más poder; [] si no hay metas.
 
@@ -90,7 +95,10 @@ def grupos_metas(temporada) -> list[dict]:
     """
     if temporada['grupos_metas']:
         try:
-            return sorted(json.loads(temporada['grupos_metas']), key=lambda g: g['desde'])
+            grupos = json.loads(temporada['grupos_metas'])
+            for g in grupos:
+                g['desde'] = poder_en_millones(g['desde'])  # grupos guardados como "100" en vez de "100M"
+            return sorted(grupos, key=lambda g: g['desde'])
         except (ValueError, KeyError, TypeError):
             print(f'[guerra] grupos_metas ilegibles en la temporada #{temporada["id"]}')
     if temporada['meta_kp'] or temporada['meta_aclamacion'] or temporada['objetivos']:
@@ -682,7 +690,8 @@ class GrupoModal(discord.ui.Modal):
             self.desde = discord.ui.TextInput(placeholder='Ej: 60M', max_length=20, required=False,
                                               default=fmt_poder(g['desde']) if g else None)
             self.add_item(discord.ui.Label(text='Desde qué poder (al empezar el KvK)',
-                                           description='Entran los que tenían este poder o más', component=self.desde))
+                                           description='En millones: 60 o 60M = 60 millones. Entran los que tengan '
+                                                       'este poder o más', component=self.desde))
         self.kp = discord.ui.TextInput(placeholder='Ej: 300M · vacío = sin meta', max_length=20, required=False,
                                        default=fmt_poder(g['kp']) if g and g['kp'] else None)
         self.aclamacion = discord.ui.TextInput(placeholder='Ej: 25K · vacío = sin meta', max_length=20, required=False,
@@ -715,6 +724,8 @@ class GrupoModal(discord.ui.Modal):
             valores[nombre] = valor
         objetivos = self.objetivos.value.strip()
         desde     = 0 if self.primero else valores['poder']
+        if desde is not None:
+            desde = poder_en_millones(desde)  # "100" → 100M
         grupos    = [dict(g) for g in self.panel.grupos]
         vacio     = not valores['KP'] and not valores['aclamación'] and not objetivos and (self.primero or desde is None)
 
