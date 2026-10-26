@@ -14,6 +14,9 @@ from cogs.registro import anotar
 ZONA = ZoneInfo('Europe/Madrid')   # los eventos se guardan en hora de España peninsular
 UTC  = ZoneInfo('UTC')
 
+AVISO_PREVIO = timedelta(minutes=30)   # cuánto antes sale el aviso "en X minutos"
+MARGEN_AHORA = timedelta(minutes=5)    # retraso máximo con el que aún se manda el "¡AHORA!"
+
 
 def fmt_poder(n: int) -> str:
     if n >= 1_000_000:
@@ -411,7 +414,8 @@ class PanelEventos(discord.ui.LayoutView):
                 f'📢 Avisos en <#{ev["canal_id"]}> · 🔔 {rol}'
             ))
             canal = discord.ui.ChannelSelect(
-                placeholder='📢 Cambiar canal de avisos', channel_types=[discord.ChannelType.text],
+                placeholder='📢 Cambiar canal de avisos',
+                channel_types=[discord.ChannelType.text, discord.ChannelType.news],
                 default_values=[discord.SelectDefaultValue(id=int(ev['canal_id']),
                                                            type=discord.SelectDefaultValueType.channel)],
             )
@@ -512,47 +516,73 @@ class Eventos(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def check_eventos(self):
-        now   = datetime.now(ZONA)
-        # El aviso se busca con la hora de dentro de 30 min: así un evento a las 00:10 avisa a las 23:40 del día antes
-        en_30 = now + timedelta(minutes=30)
+        now = datetime.now(ZONA)
         for ev in await db.get_all_active_events():
             try:
-                await self._revisar_evento(ev, now, en_30)
+                await self._revisar_evento(ev, now)
             except Exception as e:
                 # Si una excepción se escapa del bucle, discord.py lo para para siempre y no sale ningún aviso más
                 print(f'[eventos] Error con el evento #{ev["id"]} {ev["nombre"]}: {type(e).__name__}: {e}')
 
-    async def _revisar_evento(self, ev, now: datetime, en_30: datetime):
-        canal = self.bot.get_channel(int(ev['canal_id']))
-        if not canal:
-            return
-        rol_mention = f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
+    async def _revisar_evento(self, ev, now: datetime):
+        # Se comparan ventanas de tiempo y no el minuto exacto: si una vuelta del bucle se salta un minuto
+        # (latencia, reconexión o reinicio del bot) el aviso sale igual en la vuelta siguiente.
+        # Se miran ayer, hoy y mañana: un evento a las 00:10 avisa a las 23:40 del día antes, y uno a las
+        # 23:58 puede dar el "¡AHORA!" pasada la medianoche.
+        horas, minutos = map(int, ev['hora'].split(':'))
+        for offset in (-1, 0, 1):
+            dia = (now + timedelta(days=offset)).date()
+            if not toca_ese_dia(ev, datetime(dia.year, dia.month, dia.day)):
+                continue
+            inicio = datetime(dia.year, dia.month, dia.day, horas, minutos, tzinfo=ZONA)
+            await self._revisar_ocurrencia(ev, now, inicio)
 
-        dia_aviso = en_30.strftime('%Y-%m-%d')  # día del evento al que corresponde el aviso
-        if (toca_ese_dia(ev, en_30) and en_30.strftime('%H:%M') == ev['hora']
-                and ev['dia_ultimo_aviso'] != dia_aviso):
-            await db.update_event_aviso(ev['id'], dia_aviso)
+    async def _revisar_ocurrencia(self, ev, now: datetime, inicio: datetime):
+        dia_evento = inicio.strftime('%Y-%m-%d')
+        falta      = inicio - now
+
+        if timedelta(0) < falta <= AVISO_PREVIO and ev['dia_ultimo_aviso'] != dia_evento:
+            canal = await self._canal_avisos(ev)
+            if not canal:
+                return
+            await db.update_event_aviso(ev['id'], dia_evento)
+            minutos = -(-int(falta.total_seconds()) // 60)  # redondeo hacia arriba
+            es, en  = ('minuto', 'minute') if minutos == 1 else ('minutos', 'minutes')
             embed = discord.Embed(
-                title=f'⏰ {ev["nombre"]} — en 30 minutos / in 30 minutes',
+                title=f'⏰ {ev["nombre"]} — en {minutos} {es} / in {minutos} {en}',
                 description=ev['descripcion'] or '',
                 color=COLOR_BOT,
             )
-            embed.add_field(name='Hora / Time', value=fmt_horas(ev['hora'], en_30.date()))
-            await canal.send(content=rol_mention, embed=embed)
+            embed.add_field(name='Hora / Time', value=fmt_horas(ev['hora'], inicio.date()))
+            await canal.send(content=self._mencion(ev), embed=embed)
 
-        today = now.strftime('%Y-%m-%d')
-        if toca_ese_dia(ev, now) and now.strftime('%H:%M') == ev['hora'] and ev['dia_ultima_ejecucion'] != today:
-            await db.update_event_ejecucion(ev['id'], today)
-            embed = discord.Embed(
-                title=f'🚨 {ev["nombre"]} — ¡AHORA! / NOW!',
-                description=ev['descripcion'] or '',
-                color=0xFF0000,
-            )
-            await canal.send(content=rol_mention, embed=embed)
+        elif falta <= timedelta(0) and ev['dia_ultima_ejecucion'] != dia_evento:
+            canal = await self._canal_avisos(ev)
+            if not canal:
+                return
+            await db.update_event_ejecucion(ev['id'], dia_evento)
+            # Si el bot estuvo caído más del margen, no se avisa tarde de algo que ya empezó hace rato
+            if -falta <= MARGEN_AHORA:
+                embed = discord.Embed(
+                    title=f'🚨 {ev["nombre"]} — ¡AHORA! / NOW!',
+                    description=ev['descripcion'] or '',
+                    color=0xFF0000,
+                )
+                await canal.send(content=self._mencion(ev), embed=embed)
 
             if ev['puntual']:
                 await db.delete_event_by_id(ev['id'])
                 await refrescar_calendario(canal.guild)
+
+    async def _canal_avisos(self, ev):
+        canal = self.bot.get_channel(int(ev['canal_id']))
+        if not canal:
+            print(f'[eventos] El canal de avisos {ev["canal_id"]} del evento #{ev["id"]} {ev["nombre"]} ya no existe')
+        return canal
+
+    @staticmethod
+    def _mencion(ev) -> str:
+        return f'<@&{ev["rol_ping"]}>' if ev['rol_ping'] else '@everyone'
 
     @check_eventos.before_loop
     async def before_check(self):
